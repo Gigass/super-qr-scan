@@ -74,7 +74,7 @@ function loadOpenCV() {
 
 
 /**
- * 图像预处理：自适应二值化
+ * 图像预处理:自适应二值化 (高斯)
  */
 function adaptiveThreshold(gray) {
   const result = new cv.Mat()
@@ -83,7 +83,76 @@ function adaptiveThreshold(gray) {
 }
 
 /**
- * 图像预处理：放大
+ * 图像预处理:自适应二值化 (均值)
+ */
+function adaptiveThresholdMean(gray) {
+  const result = new cv.Mat()
+  cv.adaptiveThreshold(gray, result, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 11, 2)
+  return result
+}
+
+/**
+ * 图像预处理:Otsu二值化
+ */
+function otsuThreshold(gray) {
+  const result = new cv.Mat()
+  cv.threshold(gray, result, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
+  return result
+}
+
+/**
+ * 图像预处理:对比度增强 (CLAHE)
+ */
+function enhanceContrast(gray) {
+  const result = new cv.Mat()
+  const clahe = new cv.CLAHE(2.0, new cv.Size(8, 8))
+  clahe.apply(gray, result)
+  clahe.delete()
+  return result
+}
+
+/**
+ * 图像预处理:直方图均衡化
+ */
+function equalizeHistogram(gray) {
+  const result = new cv.Mat()
+  cv.equalizeHist(gray, result)
+  return result
+}
+
+/**
+ * 图像预处理:高斯模糊去噪
+ */
+function gaussianBlur(gray) {
+  const result = new cv.Mat()
+  cv.GaussianBlur(gray, result, new cv.Size(5, 5), 0)
+  return result
+}
+
+/**
+ * 图像预处理:形态学闭运算 (填补小孔)
+ */
+function morphologyClose(gray) {
+  const result = new cv.Mat()
+  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3))
+  cv.morphologyEx(gray, result, cv.MORPH_CLOSE, kernel)
+  kernel.delete()
+  return result
+}
+
+/**
+ * 图像预处理:形态学开运算 (去除噪点)
+ */
+function morphologyOpen(gray) {
+  const result = new cv.Mat()
+  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3))
+  cv.morphologyEx(gray, result, cv.MORPH_OPEN, kernel)
+  kernel.delete()
+  return result
+}
+
+/**
+ * 图像预处理:放大
  */
 function scaleUp(gray, factor) {
   const result = new cv.Mat()
@@ -93,7 +162,7 @@ function scaleUp(gray, factor) {
 }
 
 /**
- * 图像预处理：锐化
+ * 图像预处理:锐化
  */
 function sharpen(gray) {
   const result = new cv.Mat()
@@ -101,6 +170,21 @@ function sharpen(gray) {
     0, -1, 0,
     -1, 5, -1,
     0, -1, 0
+  ])
+  cv.filter2D(gray, result, -1, kernel)
+  kernel.delete()
+  return result
+}
+
+/**
+ * 图像预处理:强锐化
+ */
+function sharpenStrong(gray) {
+  const result = new cv.Mat()
+  const kernel = cv.matFromArray(3, 3, cv.CV_32F, [
+    -1, -1, -1,
+    -1, 9, -1,
+    -1, -1, -1
   ])
   cv.filter2D(gray, result, -1, kernel)
   kernel.delete()
@@ -137,39 +221,117 @@ export async function detectQRCode(imageData) {
     // 创建 QR 码检测器
     const detector = new cv.QRCodeDetector()
     
-    // 定义多种检测策略
+    // 定义多种检测策略 (从简单到复杂,从快到慢)
     const strategies = [
-      { name: '原图直接检测', scale: 1, process: null },
-      { name: '锐化', scale: 1, process: 'sharpen' },
-      { name: '自适应二值化', scale: 1, process: 'threshold' },
-      { name: '放大2倍', scale: 2, process: null },
-      { name: '放大2倍+锐化', scale: 2, process: 'sharpen' },
-      { name: '放大3倍', scale: 3, process: null },
-      { name: '放大4倍', scale: 4, process: null },
+      // === 第一轮:原图和简单处理 ===
+      { name: '原图直接检测', steps: [] },
+      { name: '高斯去噪', steps: ['blur'] },
+      { name: '直方图均衡', steps: ['equalize'] },
+      { name: '对比度增强', steps: ['contrast'] },
+      
+      // === 第二轮:锐化系列 ===
+      { name: '锐化', steps: ['sharpen'] },
+      { name: '强锐化', steps: ['sharpen_strong'] },
+      { name: '去噪+锐化', steps: ['blur', 'sharpen'] },
+      { name: '对比度增强+锐化', steps: ['contrast', 'sharpen'] },
+      
+      // === 第三轮:二值化系列 ===
+      { name: 'Otsu二值化', steps: ['otsu'] },
+      { name: '自适应二值化(高斯)', steps: ['adaptive'] },
+      { name: '自适应二值化(均值)', steps: ['adaptive_mean'] },
+      { name: '对比度增强+Otsu', steps: ['contrast', 'otsu'] },
+      { name: '去噪+自适应二值化', steps: ['blur', 'adaptive'] },
+      
+      // === 第四轮:形态学处理 ===
+      { name: '形态学闭运算', steps: ['morph_close'] },
+      { name: '形态学开运算', steps: ['morph_open'] },
+      { name: 'Otsu+闭运算', steps: ['otsu', 'morph_close'] },
+      { name: '自适应+开运算', steps: ['adaptive', 'morph_open'] },
+      
+      // === 第五轮:放大2倍系列 ===
+      { name: '放大2倍', steps: ['scale_2'] },
+      { name: '放大2倍+锐化', steps: ['scale_2', 'sharpen'] },
+      { name: '放大2倍+对比度增强', steps: ['scale_2', 'contrast'] },
+      { name: '放大2倍+Otsu', steps: ['scale_2', 'otsu'] },
+      { name: '放大2倍+对比度+锐化', steps: ['scale_2', 'contrast', 'sharpen'] },
+      { name: '放大2倍+去噪+自适应', steps: ['scale_2', 'blur', 'adaptive'] },
+      
+      // === 第六轮:放大3倍系列 ===
+      { name: '放大3倍', steps: ['scale_3'] },
+      { name: '放大3倍+锐化', steps: ['scale_3', 'sharpen'] },
+      { name: '放大3倍+对比度增强', steps: ['scale_3', 'contrast'] },
+      { name: '放大3倍+Otsu', steps: ['scale_3', 'otsu'] },
+      { name: '放大3倍+对比度+强锐化', steps: ['scale_3', 'contrast', 'sharpen_strong'] },
+      
+      // === 第七轮:放大4倍系列 (最后尝试) ===
+      { name: '放大4倍', steps: ['scale_4'] },
+      { name: '放大4倍+对比度增强', steps: ['scale_4', 'contrast'] },
+      { name: '放大4倍+去噪+锐化', steps: ['scale_4', 'blur', 'sharpen'] },
+      { name: '放大4倍+对比度+Otsu', steps: ['scale_4', 'contrast', 'otsu'] },
     ]
     
     let result = null
+    let currentScale = 1 // 追踪当前缩放比例
     
     for (const strategy of strategies) {
       console.log(`[QR检测] 尝试策略: ${strategy.name}`)
       
       let processed = gray
+      currentScale = 1 // 重置缩放比例
       
-      // 放大处理
-      if (strategy.scale > 1) {
-        processed = scaleUp(processed, strategy.scale)
-        matsToDelete.push(processed)
-      }
-      
-      // 额外处理
-      if (strategy.process === 'sharpen') {
-        const sharpened = sharpen(processed)
-        matsToDelete.push(sharpened)
-        processed = sharpened
-      } else if (strategy.process === 'threshold') {
-        const thresholded = adaptiveThreshold(processed)
-        matsToDelete.push(thresholded)
-        processed = thresholded
+      // 按顺序应用预处理步骤
+      for (const step of strategy.steps) {
+        let temp = null
+        
+        switch (step) {
+          case 'blur':
+            temp = gaussianBlur(processed)
+            break
+          case 'equalize':
+            temp = equalizeHistogram(processed)
+            break
+          case 'contrast':
+            temp = enhanceContrast(processed)
+            break
+          case 'sharpen':
+            temp = sharpen(processed)
+            break
+          case 'sharpen_strong':
+            temp = sharpenStrong(processed)
+            break
+          case 'otsu':
+            temp = otsuThreshold(processed)
+            break
+          case 'adaptive':
+            temp = adaptiveThreshold(processed)
+            break
+          case 'adaptive_mean':
+            temp = adaptiveThresholdMean(processed)
+            break
+          case 'morph_close':
+            temp = morphologyClose(processed)
+            break
+          case 'morph_open':
+            temp = morphologyOpen(processed)
+            break
+          case 'scale_2':
+            temp = scaleUp(processed, 2)
+            currentScale = 2
+            break
+          case 'scale_3':
+            temp = scaleUp(processed, 3)
+            currentScale = 3
+            break
+          case 'scale_4':
+            temp = scaleUp(processed, 4)
+            currentScale = 4
+            break
+        }
+        
+        if (temp) {
+          matsToDelete.push(temp)
+          processed = temp
+        }
       }
       
       const points = new cv.Mat()
@@ -184,9 +346,9 @@ export async function detectQRCode(imageData) {
         console.log('[QR检测] 点数据:', Array.from(data).map(v => Math.round(v)))
         
         // 根据缩放因子调整坐标
-        const scale = strategy.scale
+        const scale = currentScale
         
-        // 四个角点：左上、右上、右下、左下（顺时针）
+        // 四个角点:左上、右上、右下、左下(顺时针)
         const topLeft = { x: data[0] / scale, y: data[1] / scale }
         const topRight = { x: data[2] / scale, y: data[3] / scale }
         const bottomRight = { x: data[4] / scale, y: data[5] / scale }
