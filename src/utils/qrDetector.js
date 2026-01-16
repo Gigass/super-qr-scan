@@ -71,17 +71,7 @@ function loadOpenCV() {
   return cvLoadPromise
 }
 
-/**
- * 图像预处理：对比度增强
- */
-function enhanceContrast(gray) {
-  const result = new cv.Mat()
-  // CLAHE 对比度受限的自适应直方图均衡化
-  const clahe = new cv.CLAHE(2.0, new cv.Size(8, 8))
-  clahe.apply(gray, result)
-  clahe.delete()
-  return result
-}
+
 
 /**
  * 图像预处理：自适应二值化
