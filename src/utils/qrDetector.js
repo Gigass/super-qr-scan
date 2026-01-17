@@ -8,6 +8,15 @@
 // OpenCV.js 加载状态
 let cvReady = false
 let cvLoadPromise = null
+const DETECTION_STRATEGIES = [
+  { name: '原图直接检测', steps: [] },
+  { name: '对比度增强+Otsu', steps: ['contrast', 'otsu'] },
+  { name: 'Otsu二值化', steps: ['otsu'] },
+  { name: '自适应二值化(高斯)', steps: ['adaptive'] },
+  { name: '去噪+自适应二值化', steps: ['blur', 'adaptive'] },
+  { name: '放大2倍+对比度+Otsu', steps: ['scale_2', 'contrast', 'otsu'] },
+  { name: '放大3倍', steps: ['scale_3'] }
+]
 
 /**
  * 动态加载 OpenCV.js
@@ -167,20 +176,6 @@ function scaleUp(gray, factor) {
   return resizeByScale(gray, factor)
 }
 
-function resizeToMaxSide(gray, maxSide) {
-  if (!Number.isFinite(maxSide) || maxSide <= 0) {
-    return { mat: gray, scale: 1, ownsMat: false }
-  }
-  
-  const maxDim = Math.max(gray.cols, gray.rows)
-  if (!Number.isFinite(maxDim) || maxDim <= maxSide) {
-    return { mat: gray, scale: 1, ownsMat: false }
-  }
-  
-  const scale = maxSide / maxDim
-  return { mat: resizeByScale(gray, scale), scale, ownsMat: true }
-}
-
 /**
  * 图像预处理:锐化
  */
@@ -240,60 +235,6 @@ export async function detectQRCode(imageData, sourceCanvas = null) {
     
     // 创建 QR 码检测器
     const detector = new cv.QRCodeDetector()
-    
-    const fastStrategies = [
-      { name: '原图直接检测', steps: [] },
-      { name: '对比度增强+Otsu', steps: ['contrast', 'otsu'] },
-      { name: '对比度增强', steps: ['contrast'] },
-      { name: 'Otsu二值化', steps: ['otsu'] },
-      { name: '自适应二值化(高斯)', steps: ['adaptive'] }
-    ]
-    
-    const strategies = [
-      // === 第一轮:原图和简单处理 ===
-      { name: '原图直接检测', steps: [] },
-      { name: '对比度增强+Otsu', steps: ['contrast', 'otsu'] },
-      { name: '对比度增强', steps: ['contrast'] },
-      { name: 'Otsu二值化', steps: ['otsu'] },
-      { name: '自适应二值化(高斯)', steps: ['adaptive'] },
-      { name: '自适应二值化(均值)', steps: ['adaptive_mean'] },
-      { name: '高斯去噪', steps: ['blur'] },
-      { name: '直方图均衡', steps: ['equalize'] },
-      
-      // === 第二轮:锐化系列 ===
-      { name: '锐化', steps: ['sharpen'] },
-      { name: '强锐化', steps: ['sharpen_strong'] },
-      { name: '去噪+锐化', steps: ['blur', 'sharpen'] },
-      { name: '对比度增强+锐化', steps: ['contrast', 'sharpen'] },
-      
-      // === 第三轮:二值化组合 ===
-      { name: '去噪+自适应二值化', steps: ['blur', 'adaptive'] },
-      { name: '形态学闭运算', steps: ['morph_close'] },
-      { name: '形态学开运算', steps: ['morph_open'] },
-      { name: 'Otsu+闭运算', steps: ['otsu', 'morph_close'] },
-      { name: '自适应+开运算', steps: ['adaptive', 'morph_open'] },
-      
-      // === 第四轮:放大2倍系列 ===
-      { name: '放大2倍', steps: ['scale_2'] },
-      { name: '放大2倍+锐化', steps: ['scale_2', 'sharpen'] },
-      { name: '放大2倍+对比度增强', steps: ['scale_2', 'contrast'] },
-      { name: '放大2倍+Otsu', steps: ['scale_2', 'otsu'] },
-      { name: '放大2倍+对比度+锐化', steps: ['scale_2', 'contrast', 'sharpen'] },
-      { name: '放大2倍+去噪+自适应', steps: ['scale_2', 'blur', 'adaptive'] },
-      
-      // === 第五轮:放大3倍系列 ===
-      { name: '放大3倍', steps: ['scale_3'] },
-      { name: '放大3倍+锐化', steps: ['scale_3', 'sharpen'] },
-      { name: '放大3倍+对比度增强', steps: ['scale_3', 'contrast'] },
-      { name: '放大3倍+Otsu', steps: ['scale_3', 'otsu'] },
-      { name: '放大3倍+对比度+强锐化', steps: ['scale_3', 'contrast', 'sharpen_strong'] },
-      
-      // === 第六轮:放大4倍系列 (最后尝试) ===
-      { name: '放大4倍', steps: ['scale_4'] },
-      { name: '放大4倍+对比度增强', steps: ['scale_4', 'contrast'] },
-      { name: '放大4倍+去噪+锐化', steps: ['scale_4', 'blur', 'sharpen'] },
-      { name: '放大4倍+对比度+Otsu', steps: ['scale_4', 'contrast', 'otsu'] }
-    ]
     
     let validationCanvas = sourceCanvas
     const ensureValidationCanvas = () => {
@@ -432,36 +373,7 @@ export async function detectQRCode(imageData, sourceCanvas = null) {
       return null
     }
     
-    let result = null
-    const maxFastSide = 1280
-    const fastScaleInfo = resizeToMaxSide(gray, maxFastSide)
-    const runs = []
-    
-    if (fastScaleInfo.ownsMat && fastScaleInfo.scale < 1) {
-      matsToDelete.push(fastScaleInfo.mat)
-      console.log(`[QR检测] 快速检测: ${Math.round(fastScaleInfo.scale * 100)}%`)
-      runs.push({
-        label: '快速',
-        gray: fastScaleInfo.mat,
-        baseScale: fastScaleInfo.scale,
-        strategies: fastStrategies
-      })
-    }
-    
-    runs.push({
-      label: '',
-      gray,
-      baseScale: 1,
-      strategies
-    })
-    
-    for (const run of runs) {
-      const detection = await detectWithStrategies(run.label, run.gray, run.baseScale, run.strategies)
-      if (detection) {
-        result = detection
-        break
-      }
-    }
+    const result = await detectWithStrategies('', gray, 1, DETECTION_STRATEGIES)
     
     detector.delete()
     
