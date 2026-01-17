@@ -154,11 +154,31 @@ function morphologyOpen(gray) {
 /**
  * 图像预处理:放大
  */
-function scaleUp(gray, factor) {
+function resizeByScale(gray, factor) {
   const result = new cv.Mat()
-  const newSize = new cv.Size(gray.cols * factor, gray.rows * factor)
-  cv.resize(gray, result, newSize, 0, 0, cv.INTER_CUBIC)
+  const width = Math.max(1, Math.round(gray.cols * factor))
+  const height = Math.max(1, Math.round(gray.rows * factor))
+  const interpolation = factor >= 1 ? cv.INTER_CUBIC : cv.INTER_AREA
+  cv.resize(gray, result, new cv.Size(width, height), 0, 0, interpolation)
   return result
+}
+
+function scaleUp(gray, factor) {
+  return resizeByScale(gray, factor)
+}
+
+function resizeToMaxSide(gray, maxSide) {
+  if (!Number.isFinite(maxSide) || maxSide <= 0) {
+    return { mat: gray, scale: 1, ownsMat: false }
+  }
+  
+  const maxDim = Math.max(gray.cols, gray.rows)
+  if (!Number.isFinite(maxDim) || maxDim <= maxSide) {
+    return { mat: gray, scale: 1, ownsMat: false }
+  }
+  
+  const scale = maxSide / maxDim
+  return { mat: resizeByScale(gray, scale), scale, ownsMat: true }
 }
 
 /**
@@ -221,13 +241,24 @@ export async function detectQRCode(imageData) {
     // 创建 QR 码检测器
     const detector = new cv.QRCodeDetector()
     
-    // 定义多种检测策略 (从简单到复杂,从快到慢)
+    const fastStrategies = [
+      { name: '原图直接检测', steps: [] },
+      { name: '对比度增强+Otsu', steps: ['contrast', 'otsu'] },
+      { name: '对比度增强', steps: ['contrast'] },
+      { name: 'Otsu二值化', steps: ['otsu'] },
+      { name: '自适应二值化(高斯)', steps: ['adaptive'] }
+    ]
+    
     const strategies = [
       // === 第一轮:原图和简单处理 ===
       { name: '原图直接检测', steps: [] },
+      { name: '对比度增强+Otsu', steps: ['contrast', 'otsu'] },
+      { name: '对比度增强', steps: ['contrast'] },
+      { name: 'Otsu二值化', steps: ['otsu'] },
+      { name: '自适应二值化(高斯)', steps: ['adaptive'] },
+      { name: '自适应二值化(均值)', steps: ['adaptive_mean'] },
       { name: '高斯去噪', steps: ['blur'] },
       { name: '直方图均衡', steps: ['equalize'] },
-      { name: '对比度增强', steps: ['contrast'] },
       
       // === 第二轮:锐化系列 ===
       { name: '锐化', steps: ['sharpen'] },
@@ -235,20 +266,14 @@ export async function detectQRCode(imageData) {
       { name: '去噪+锐化', steps: ['blur', 'sharpen'] },
       { name: '对比度增强+锐化', steps: ['contrast', 'sharpen'] },
       
-      // === 第三轮:二值化系列 ===
-      { name: 'Otsu二值化', steps: ['otsu'] },
-      { name: '自适应二值化(高斯)', steps: ['adaptive'] },
-      { name: '自适应二值化(均值)', steps: ['adaptive_mean'] },
-      { name: '对比度增强+Otsu', steps: ['contrast', 'otsu'] },
+      // === 第三轮:二值化组合 ===
       { name: '去噪+自适应二值化', steps: ['blur', 'adaptive'] },
-      
-      // === 第四轮:形态学处理 ===
       { name: '形态学闭运算', steps: ['morph_close'] },
       { name: '形态学开运算', steps: ['morph_open'] },
       { name: 'Otsu+闭运算', steps: ['otsu', 'morph_close'] },
       { name: '自适应+开运算', steps: ['adaptive', 'morph_open'] },
       
-      // === 第五轮:放大2倍系列 ===
+      // === 第四轮:放大2倍系列 ===
       { name: '放大2倍', steps: ['scale_2'] },
       { name: '放大2倍+锐化', steps: ['scale_2', 'sharpen'] },
       { name: '放大2倍+对比度增强', steps: ['scale_2', 'contrast'] },
@@ -256,125 +281,156 @@ export async function detectQRCode(imageData) {
       { name: '放大2倍+对比度+锐化', steps: ['scale_2', 'contrast', 'sharpen'] },
       { name: '放大2倍+去噪+自适应', steps: ['scale_2', 'blur', 'adaptive'] },
       
-      // === 第六轮:放大3倍系列 ===
+      // === 第五轮:放大3倍系列 ===
       { name: '放大3倍', steps: ['scale_3'] },
       { name: '放大3倍+锐化', steps: ['scale_3', 'sharpen'] },
       { name: '放大3倍+对比度增强', steps: ['scale_3', 'contrast'] },
       { name: '放大3倍+Otsu', steps: ['scale_3', 'otsu'] },
       { name: '放大3倍+对比度+强锐化', steps: ['scale_3', 'contrast', 'sharpen_strong'] },
       
-      // === 第七轮:放大4倍系列 (最后尝试) ===
+      // === 第六轮:放大4倍系列 (最后尝试) ===
       { name: '放大4倍', steps: ['scale_4'] },
       { name: '放大4倍+对比度增强', steps: ['scale_4', 'contrast'] },
       { name: '放大4倍+去噪+锐化', steps: ['scale_4', 'blur', 'sharpen'] },
-      { name: '放大4倍+对比度+Otsu', steps: ['scale_4', 'contrast', 'otsu'] },
+      { name: '放大4倍+对比度+Otsu', steps: ['scale_4', 'contrast', 'otsu'] }
     ]
     
-    let result = null
-    let currentScale = 1 // 追踪当前缩放比例
-    
-    for (const strategy of strategies) {
-      console.log(`[QR检测] 尝试策略: ${strategy.name}`)
+    const detectWithStrategies = (label, baseGray, baseScale, strategyList) => {
+      let currentScale = 1
+      const logPrefix = label ? `${label} ` : ''
       
-      let processed = gray
-      currentScale = 1 // 重置缩放比例
-      
-      // 按顺序应用预处理步骤
-      for (const step of strategy.steps) {
-        let temp = null
+      for (const strategy of strategyList) {
+        console.log(`[QR检测] ${logPrefix}尝试策略: ${strategy.name}`)
         
-        switch (step) {
-          case 'blur':
-            temp = gaussianBlur(processed)
-            break
-          case 'equalize':
-            temp = equalizeHistogram(processed)
-            break
-          case 'contrast':
-            temp = enhanceContrast(processed)
-            break
-          case 'sharpen':
-            temp = sharpen(processed)
-            break
-          case 'sharpen_strong':
-            temp = sharpenStrong(processed)
-            break
-          case 'otsu':
-            temp = otsuThreshold(processed)
-            break
-          case 'adaptive':
-            temp = adaptiveThreshold(processed)
-            break
-          case 'adaptive_mean':
-            temp = adaptiveThresholdMean(processed)
-            break
-          case 'morph_close':
-            temp = morphologyClose(processed)
-            break
-          case 'morph_open':
-            temp = morphologyOpen(processed)
-            break
-          case 'scale_2':
-            temp = scaleUp(processed, 2)
-            currentScale = 2
-            break
-          case 'scale_3':
-            temp = scaleUp(processed, 3)
-            currentScale = 3
-            break
-          case 'scale_4':
-            temp = scaleUp(processed, 4)
-            currentScale = 4
-            break
+        let processed = baseGray
+        currentScale = 1
+        
+        for (const step of strategy.steps) {
+          let temp = null
+          
+          switch (step) {
+            case 'blur':
+              temp = gaussianBlur(processed)
+              break
+            case 'equalize':
+              temp = equalizeHistogram(processed)
+              break
+            case 'contrast':
+              temp = enhanceContrast(processed)
+              break
+            case 'sharpen':
+              temp = sharpen(processed)
+              break
+            case 'sharpen_strong':
+              temp = sharpenStrong(processed)
+              break
+            case 'otsu':
+              temp = otsuThreshold(processed)
+              break
+            case 'adaptive':
+              temp = adaptiveThreshold(processed)
+              break
+            case 'adaptive_mean':
+              temp = adaptiveThresholdMean(processed)
+              break
+            case 'morph_close':
+              temp = morphologyClose(processed)
+              break
+            case 'morph_open':
+              temp = morphologyOpen(processed)
+              break
+            case 'scale_2':
+              temp = scaleUp(processed, 2)
+              currentScale = 2
+              break
+            case 'scale_3':
+              temp = scaleUp(processed, 3)
+              currentScale = 3
+              break
+            case 'scale_4':
+              temp = scaleUp(processed, 4)
+              currentScale = 4
+              break
+          }
+          
+          if (temp) {
+            matsToDelete.push(temp)
+            processed = temp
+          }
         }
         
-        if (temp) {
-          matsToDelete.push(temp)
-          processed = temp
-        }
-      }
-      
-      const points = new cv.Mat()
-      matsToDelete.push(points)
-      
-      const found = detector.detect(processed, points)
-      console.log(`[QR检测] ${strategy.name} - found:`, found, ', points:', points.rows, 'x', points.cols)
-      
-      if (found && points.rows > 0 && points.data32F && points.data32F.length >= 8) {
-        const data = points.data32F
-        console.log('[QR检测] ✓ 检测到二维码!')
-        console.log('[QR检测] 点数据:', Array.from(data).map(v => Math.round(v)))
+        const points = new cv.Mat()
+        matsToDelete.push(points)
         
-        // 根据缩放因子调整坐标
-        const scale = currentScale
+        const found = detector.detect(processed, points)
+        console.log(`[QR检测] ${logPrefix}${strategy.name} - found:`, found, ', points:', points.rows, 'x', points.cols)
         
-        // 四个角点:左上、右上、右下、左下(顺时针)
-        const topLeft = { x: data[0] / scale, y: data[1] / scale }
-        const topRight = { x: data[2] / scale, y: data[3] / scale }
-        const bottomRight = { x: data[4] / scale, y: data[5] / scale }
-        const bottomLeft = { x: data[6] / scale, y: data[7] / scale }
-        
-        const corners = { topLeft, topRight, bottomRight, bottomLeft }
-        
-        result = {
-          topLeft,
-          topRight,
-          bottomRight,
-          bottomLeft,
-          boundingBox: calculateBoundingBox(corners),
-          center: calculateCenter(corners),
-          strategy: strategy.name,
-          allDetections: [{
+        if (found && points.rows > 0 && points.data32F && points.data32F.length >= 8) {
+          const data = points.data32F
+          console.log('[QR检测] ✓ 检测到二维码!')
+          console.log('[QR检测] 点数据:', Array.from(data).map(v => Math.round(v)))
+          
+          const scale = baseScale * currentScale
+          const denom = scale > 0 ? scale : 1
+          
+          const topLeft = { x: data[0] / denom, y: data[1] / denom }
+          const topRight = { x: data[2] / denom, y: data[3] / denom }
+          const bottomRight = { x: data[4] / denom, y: data[5] / denom }
+          const bottomLeft = { x: data[6] / denom, y: data[7] / denom }
+          
+          const corners = { topLeft, topRight, bottomRight, bottomLeft }
+          const strategyName = label ? `${label}-${strategy.name}` : strategy.name
+          
+          return {
             topLeft,
             topRight,
             bottomRight,
             bottomLeft,
             boundingBox: calculateBoundingBox(corners),
-            center: calculateCenter(corners)
-          }]
+            center: calculateCenter(corners),
+            strategy: strategyName,
+            allDetections: [{
+              topLeft,
+              topRight,
+              bottomRight,
+              bottomLeft,
+              boundingBox: calculateBoundingBox(corners),
+              center: calculateCenter(corners)
+            }]
+          }
         }
-        
-        // 找到就退出循环
+      }
+      
+      return null
+    }
+    
+    let result = null
+    const maxFastSide = 1280
+    const fastScaleInfo = resizeToMaxSide(gray, maxFastSide)
+    const runs = []
+    
+    if (fastScaleInfo.ownsMat && fastScaleInfo.scale < 1) {
+      matsToDelete.push(fastScaleInfo.mat)
+      console.log(`[QR检测] 快速检测: ${Math.round(fastScaleInfo.scale * 100)}%`)
+      runs.push({
+        label: '快速',
+        gray: fastScaleInfo.mat,
+        baseScale: fastScaleInfo.scale,
+        strategies: fastStrategies
+      })
+    }
+    
+    runs.push({
+      label: '',
+      gray,
+      baseScale: 1,
+      strategies
+    })
+    
+    for (const run of runs) {
+      const detection = detectWithStrategies(run.label, run.gray, run.baseScale, run.strategies)
+      if (detection) {
+        result = detection
         break
       }
     }
@@ -786,15 +842,6 @@ function binarizeImageData(imageData) {
   return new ImageData(out, width, height)
 }
 
-function imageDataToCanvas(imageData) {
-  const canvas = document.createElement('canvas')
-  canvas.width = imageData.width
-  canvas.height = imageData.height
-  const ctx = canvas.getContext('2d')
-  ctx.putImageData(imageData, 0, 0)
-  return canvas
-}
-
 async function tryOpenCVDecodeFromImageData(imageData, label) {
   if (typeof cv === 'undefined' || !cv.QRCodeDetector) return null
   
@@ -894,7 +941,7 @@ async function tryOpenCVDecodeFromImageData(imageData, label) {
 }
 
 /**
- * 解码QR码内容 (主要使用 jsQR，ZXing 作为后备)
+ * 解码QR码内容 (OpenCV + jsQR)
  * @param {string} base64Image - Base64图像字符串
  * @returns {Promise<string|null>} 解码后的文本内容
  */
@@ -977,58 +1024,102 @@ export async function decodeQRCode(base64Image) {
       }
     }
     
-    console.log('[QR解码] jsQR 未能解码，尝试 ZXing 作为后备...')
-    
-    // ============ 方法2: 使用 ZXing 作为后备 ============
-    try {
-      const { BrowserQRCodeReader } = await import('@zxing/browser')
-      const codeReader = new BrowserQRCodeReader()
-      
-      for (const scale of scales) {
-        try {
-          console.log(`[QR解码] ZXing 尝试 ${scale}x 放大(无插值)...`)
-          const { canvas } = getImageDataAtScale(img, scale, false)
-          
-          const result = codeReader.decodeFromCanvas(canvas)
-          
-          if (result && result.getText()) {
-            console.log(`[QR解码] ✓ ZXing 解码成功! (${scale}x 放大)`)
-            console.log('[QR解码] 内容:', result.getText())
-            return result.getText()
-          }
-        } catch (zxingError) {
-          console.log(`[QR解码] ZXing ${scale}x 放大失败:`, zxingError.message || zxingError)
-        }
-      }
-      
-      for (const scale of scales) {
-        try {
-          console.log(`[QR解码] ZXing 尝试 ${scale}x 放大(二值化)...`)
-          const { imageData } = getImageDataAtScale(img, scale, false)
-          const binarized = binarizeImageData(imageData)
-          const canvas = imageDataToCanvas(binarized)
-          
-          const result = codeReader.decodeFromCanvas(canvas)
-          
-          if (result && result.getText()) {
-            console.log(`[QR解码] ✓ ZXing 解码成功! (${scale}x 放大, 二值化)`)
-            console.log('[QR解码] 内容:', result.getText())
-            return result.getText()
-          }
-        } catch (zxingError) {
-          console.log(`[QR解码] ZXing ${scale}x 二值化失败:`, zxingError.message || zxingError)
-        }
-      }
-    } catch (zxingImportError) {
-      console.warn('[QR解码] ZXing 库导入失败:', zxingImportError.message)
-    }
-    
     console.log('[QR解码] ✗ 所有方法都无法解码')
     console.log('[QR解码] 提示: 请检查截取的图像是否包含完整、清晰的二维码')
     return null
   } catch (error) {
     console.error('[QR解码] 解码过程出错:', error)
     return null
+  }
+}
+
+function distancePoint(a, b) {
+  const dx = a.x - b.x
+  const dy = a.y - b.y
+  return Math.hypot(dx, dy)
+}
+
+async function warpQRCodeFromCanvas(sourceCanvas, detection, options = {}) {
+  const { targetSize, paddingRatio } = options
+  
+  if (!sourceCanvas || !detection) return null
+  const { topLeft, topRight, bottomRight, bottomLeft } = detection
+
+  if (!topLeft || !topRight || !bottomRight || !bottomLeft) return null
+  await loadOpenCV()
+  if (typeof cv === 'undefined' || !cv.getPerspectiveTransform) return null
+  
+  const matsToDelete = []
+  
+  try {
+    const src = cv.imread(sourceCanvas)
+    matsToDelete.push(src)
+    
+    const widthA = distancePoint(topLeft, topRight)
+    const widthB = distancePoint(bottomLeft, bottomRight)
+    const heightA = distancePoint(topLeft, bottomLeft)
+    const heightB = distancePoint(topRight, bottomRight)
+    const maxSide = Math.max(widthA, widthB, heightA, heightB)
+    
+    if (!Number.isFinite(maxSide) || maxSide <= 0) return null
+    
+    const sizeCandidate = Number.isFinite(targetSize) && targetSize > 0 ? targetSize : maxSide
+    const outputSize = Math.max(64, Math.round(sizeCandidate))
+    const ratio = Number.isFinite(paddingRatio) ? Math.max(0, Math.min(0.5, paddingRatio)) : 0
+    const pad = ratio > 0 ? Math.round(outputSize * ratio / (1 + ratio * 2)) : 0
+    const innerSize = outputSize - pad * 2
+    
+    if (innerSize <= 0) return null
+    
+    const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      topLeft.x, topLeft.y,
+      topRight.x, topRight.y,
+      bottomRight.x, bottomRight.y,
+      bottomLeft.x, bottomLeft.y
+    ])
+    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+      pad, pad,
+      pad + innerSize, pad,
+      pad + innerSize, pad + innerSize,
+      pad, pad + innerSize
+    ])
+    matsToDelete.push(srcTri, dstTri)
+    
+    const transform = cv.getPerspectiveTransform(srcTri, dstTri)
+    matsToDelete.push(transform)
+    
+    const dst = new cv.Mat()
+    matsToDelete.push(dst)
+    
+    const border = new cv.Scalar(255, 255, 255, 255)
+    cv.warpPerspective(
+      src,
+      dst,
+      transform,
+      new cv.Size(outputSize, outputSize),
+      cv.INTER_LINEAR,
+      cv.BORDER_CONSTANT,
+      border
+    )
+    
+    const outCanvas = document.createElement('canvas')
+    outCanvas.width = dst.cols
+    outCanvas.height = dst.rows
+    cv.imshow(outCanvas, dst)
+    
+    return outCanvas.toDataURL('image/png')
+  } catch (error) {
+    return null
+  } finally {
+    matsToDelete.forEach(mat => {
+      try {
+        if (mat && !mat.isDeleted()) {
+          mat.delete()
+        }
+      } catch (e) {
+        // ignore delete errors
+      }
+    })
   }
 }
 
@@ -1049,7 +1140,7 @@ export async function decodeQRCodeFromCanvas(sourceCanvas, detection, options = 
   if (!sourceCanvas || !detection || !detection.boundingBox) {
     return null
   }
-  
+
   const { x, y, width, height } = detection.boundingBox
   const padX = width * paddingRatio
   const padY = height * paddingRatio
@@ -1092,5 +1183,19 @@ export async function decodeQRCodeFromCanvas(sourceCanvas, detection, options = 
     0, 0, outWidth, outHeight
   )
   
-  return decodeQRCode(canvas.toDataURL('image/png'))
+  const roiDecoded = await decodeQRCode(canvas.toDataURL('image/png'))
+  if (roiDecoded) return roiDecoded
+  
+  const warped = await warpQRCodeFromCanvas(sourceCanvas, detection, {
+    paddingRatio,
+    targetSize,
+    backgroundColor
+  })
+  
+  if (warped) {
+    const decoded = await decodeQRCode(warped)
+    if (decoded) return decoded
+  }
+  
+  return null
 }
