@@ -250,8 +250,8 @@
               </svg>
               二维码截图
             </h4>
-            <div class="qr-image-container">
-              <img :src="qrCodeImage" alt="QR码截图" class="qr-image" />
+            <div ref="qrImageContainerRef" class="qr-image-container">
+              <img ref="qrImageRef" :src="qrCodeImage" alt="QR码截图" class="qr-image" />
             </div>
           </div>
 
@@ -321,7 +321,78 @@
 </template>
 
 <script>
-import { detectQRCode, drawDetectionResult, getImageDataFromFile, preloadOpenCV, extractQRCodeImage, decodeQRCode } from './utils/qrDetector'
+import { detectQRCode, drawDetectionResult, getImageDataFromFile, preloadOpenCV, extractQRCodeImage, decodeQRCode, composeQRCodeForDecode, decodeQRCodeFromCanvas } from './utils/qrDetector'
+
+const DECODE_TARGET_SIZE = 960
+
+function parseCssColor(value) {
+  if (!value || typeof value !== 'string') return null
+  const rgbMatch = value.match(/rgba?\(([^)]+)\)/i)
+  if (rgbMatch) {
+    const parts = rgbMatch[1]
+      .replace(/\//g, ',')
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .map(Number)
+    if (parts.length >= 3 && parts.every(n => Number.isFinite(n))) {
+      return {
+        r: parts[0],
+        g: parts[1],
+        b: parts[2],
+        a: parts.length >= 4 ? parts[3] : 1
+      }
+    }
+  }
+  
+  if (value.startsWith('#')) {
+    const hex = value.slice(1)
+    if (hex.length === 3) {
+      return {
+        r: parseInt(hex[0] + hex[0], 16),
+        g: parseInt(hex[1] + hex[1], 16),
+        b: parseInt(hex[2] + hex[2], 16),
+        a: 1
+      }
+    }
+    if (hex.length === 6) {
+      return {
+        r: parseInt(hex.slice(0, 2), 16),
+        g: parseInt(hex.slice(2, 4), 16),
+        b: parseInt(hex.slice(4, 6), 16),
+        a: 1
+      }
+    }
+  }
+  
+  return null
+}
+
+function toOpaqueColor(foreground, background) {
+  const fg = parseCssColor(foreground)
+  if (!fg) return '#ffffff'
+  if (!Number.isFinite(fg.a) || fg.a >= 1) {
+    return `rgb(${Math.round(fg.r)}, ${Math.round(fg.g)}, ${Math.round(fg.b)})`
+  }
+  const bg = parseCssColor(background) || { r: 255, g: 255, b: 255, a: 1 }
+  const a = fg.a
+  const r = Math.round(fg.r * a + bg.r * (1 - a))
+  const g = Math.round(fg.g * a + bg.g * (1 - a))
+  const b = Math.round(fg.b * a + bg.b * (1 - a))
+  return `rgb(${r}, ${g}, ${b})`
+}
+
+async function getImageSize(base64Image) {
+  const img = new Image()
+  await new Promise((resolve, reject) => {
+    img.onload = resolve
+    img.onerror = () => reject(new Error('图像加载失败'))
+    img.src = base64Image
+  })
+  return {
+    width: img.naturalWidth || img.width || 0,
+    height: img.naturalHeight || img.height || 0
+  }
+}
 
 export default {
   name: 'App',
@@ -374,6 +445,56 @@ export default {
       if (newMode === 'upload') {
         this.clearUpload()
       }
+    },
+
+    async decodeDisplayedQRCode() {
+      if (!this.qrCodeImage) return null
+      
+      await this.$nextTick()
+      
+      const imgEl = this.$refs.qrImageRef
+      const containerEl = this.$refs.qrImageContainerRef
+      const styles = containerEl ? window.getComputedStyle(containerEl) : null
+      const paddingRaw = styles ? parseFloat(styles.paddingLeft || '0') : 0
+      const padding = Number.isFinite(paddingRaw) ? paddingRaw : 0
+      const backgroundColor = styles ? styles.backgroundColor : '#ffffff'
+      const rootBg = window.getComputedStyle(document.documentElement)
+        .getPropertyValue('--bg-primary')
+        .trim()
+      const opaqueBackground = toOpaqueColor(backgroundColor, rootBg || '#0f0f23')
+      
+      const { width: baseWidth, height: baseHeight } = await getImageSize(this.qrCodeImage)
+      if (!baseWidth || !baseHeight) {
+        return decodeQRCode(this.qrCodeImage)
+      }
+      
+      const displayWidth = Math.round(imgEl?.clientWidth || baseWidth)
+      const displayScale = displayWidth > 0 ? baseWidth / displayWidth : 1
+      const maxSide = Math.max(baseWidth, baseHeight)
+      const targetScale = maxSide > 0 ? Math.max(1, DECODE_TARGET_SIZE / maxSide) : 1
+      const targetWidth = Math.round(baseWidth * targetScale)
+      const targetHeight = Math.round(baseHeight * targetScale)
+      const effectivePadding = Math.round(padding * displayScale * targetScale)
+      const displayImage = await composeQRCodeForDecode(this.qrCodeImage, {
+        padding: effectivePadding,
+        backgroundColor: opaqueBackground,
+        targetWidth,
+        targetHeight,
+        smoothing: false
+      })
+      
+      return decodeQRCode(displayImage)
+    },
+
+    async decodeFromSourceCanvas(canvas, detection) {
+      if (!canvas || !detection) return null
+      const decoded = await decodeQRCodeFromCanvas(canvas, detection, {
+        paddingRatio: 0.35,
+        targetSize: DECODE_TARGET_SIZE,
+        backgroundColor: '#ffffff'
+      })
+      if (decoded) return decoded
+      return this.decodeDisplayedQRCode()
     },
 
     /**
@@ -476,8 +597,8 @@ export default {
           // 重要:先截取纯净的QR码图像(在绘制标记之前)
           this.qrCodeImage = extractQRCodeImage(canvas, result, 0.15)
           
-          // 解码QR码内容(使用截取的QR码图像)
-          this.qrCodeContent = await decodeQRCode(this.qrCodeImage)
+          // 解码QR码内容(使用源画布ROI放大)
+          this.qrCodeContent = await this.decodeFromSourceCanvas(canvas, result)
           console.log('[QR解码] 内容:', this.qrCodeContent)
           
           // 最后绘制检测结果(这样不会影响截图)
@@ -570,8 +691,8 @@ export default {
           // 重要:先截取纯净的QR码图像(在绘制标记之前)
           this.qrCodeImage = extractQRCodeImage(canvas, result, 0.15)
           
-          // 解码QR码内容(使用截取的QR码图像)
-          this.qrCodeContent = await decodeQRCode(this.qrCodeImage)
+          // 解码QR码内容(使用源画布ROI放大)
+          this.qrCodeContent = await this.decodeFromSourceCanvas(canvas, result)
           console.log('[QR解码] 内容:', this.qrCodeContent)
           
           // 最后绘制检测结果(这样不会影响截图)

@@ -654,6 +654,53 @@ export function extractQRCodeImage(sourceCanvas, detection, margin = 0.1) {
   return tempCanvas.toDataURL('image/png')
 }
 
+/**
+ * 组合页面展示效果的二维码图像（用于解码）
+ * @param {string} base64Image - Base64图像字符串
+ * @param {Object} options - 组合选项
+ * @returns {Promise<string>} Base64图像数据
+ */
+export async function composeQRCodeForDecode(base64Image, options = {}) {
+  const {
+    padding = 0,
+    backgroundColor = '#ffffff',
+    targetWidth,
+    targetHeight,
+    smoothing = true,
+    smoothingQuality = 'high'
+  } = options
+  
+  const img = new Image()
+  await new Promise((resolve, reject) => {
+    img.onload = resolve
+    img.onerror = () => reject(new Error('图像加载失败'))
+    img.src = base64Image
+  })
+  
+  const pad = Math.max(0, Math.round(padding))
+  const width = Math.max(1, Math.round(targetWidth || img.width))
+  const height = Math.max(1, Math.round(targetHeight || img.height))
+  
+  const canvas = document.createElement('canvas')
+  canvas.width = width + pad * 2
+  canvas.height = height + pad * 2
+  
+  const ctx = canvas.getContext('2d')
+  ctx.imageSmoothingEnabled = Boolean(smoothing)
+  if (ctx.imageSmoothingEnabled && smoothingQuality) {
+    ctx.imageSmoothingQuality = smoothingQuality
+  }
+  
+  if (backgroundColor) {
+    ctx.fillStyle = backgroundColor
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+  }
+  
+  ctx.drawImage(img, pad, pad, width, height)
+  
+  return canvas.toDataURL('image/png')
+}
+
 function createScaledCanvas(img, scale, smoothing) {
   const canvas = document.createElement('canvas')
   const width = Math.max(1, Math.round(img.width * scale))
@@ -748,6 +795,104 @@ function imageDataToCanvas(imageData) {
   return canvas
 }
 
+async function tryOpenCVDecodeFromImageData(imageData, label) {
+  if (typeof cv === 'undefined' || !cv.QRCodeDetector) return null
+  
+  await loadOpenCV()
+  
+  const matsToDelete = []
+  let detector = null
+  
+  try {
+    detector = new cv.QRCodeDetector()
+    const src = cv.matFromImageData(imageData)
+    matsToDelete.push(src)
+    
+    const variants = []
+    const gray = new cv.Mat()
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY)
+    matsToDelete.push(gray)
+    variants.push({ name: 'gray', mat: gray })
+    
+    const grayBinary = new cv.Mat()
+    cv.threshold(gray, grayBinary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
+    matsToDelete.push(grayBinary)
+    variants.push({ name: 'gray-otsu', mat: grayBinary })
+    
+    const grayBinaryInv = new cv.Mat()
+    cv.bitwise_not(grayBinary, grayBinaryInv)
+    matsToDelete.push(grayBinaryInv)
+    variants.push({ name: 'gray-otsu-inv', mat: grayBinaryInv })
+    
+    const red = new cv.Mat()
+    cv.extractChannel(src, red, 0)
+    matsToDelete.push(red)
+    variants.push({ name: 'red', mat: red })
+    
+    const hsv = new cv.Mat()
+    cv.cvtColor(src, hsv, cv.COLOR_RGBA2HSV)
+    matsToDelete.push(hsv)
+    
+    const sat = new cv.Mat()
+    cv.extractChannel(hsv, sat, 1)
+    matsToDelete.push(sat)
+    variants.push({ name: 'sat', mat: sat })
+    
+    const satBinary = new cv.Mat()
+    cv.threshold(sat, satBinary, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
+    matsToDelete.push(satBinary)
+    variants.push({ name: 'sat-otsu', mat: satBinary })
+    
+    const satBinaryInv = new cv.Mat()
+    cv.bitwise_not(satBinary, satBinaryInv)
+    matsToDelete.push(satBinaryInv)
+    variants.push({ name: 'sat-otsu-inv', mat: satBinaryInv })
+    
+    for (const variant of variants) {
+      console.log(`[QR解码] OpenCV 尝试 ${label}:${variant.name}`)
+      const points = new cv.Mat()
+      const straight = new cv.Mat()
+      matsToDelete.push(points, straight)
+      
+      let text = ''
+      try {
+        if (typeof detector.detectAndDecode === 'function') {
+          text = detector.detectAndDecode(variant.mat, points, straight)
+        } else if (typeof detector.detect === 'function' && typeof detector.decode === 'function') {
+          const found = detector.detect(variant.mat, points)
+          if (found) {
+            text = detector.decode(variant.mat, points, straight)
+          }
+        }
+      } catch (error) {
+        text = ''
+      }
+      
+      if (text && text.length) {
+        console.log(`[QR解码] ✓ OpenCV 解码成功 (${label}:${variant.name})`)
+        return text
+      }
+    }
+    
+    return null
+  } catch (error) {
+    return null
+  } finally {
+    matsToDelete.forEach(mat => {
+      try {
+        if (mat && !mat.isDeleted()) {
+          mat.delete()
+        }
+      } catch (e) {
+        // ignore delete errors
+      }
+    })
+    if (detector && typeof detector.delete === 'function') {
+      detector.delete()
+    }
+  }
+}
+
 /**
  * 解码QR码内容 (主要使用 jsQR，ZXing 作为后备)
  * @param {string} base64Image - Base64图像字符串
@@ -776,6 +921,21 @@ export async function decodeQRCode(base64Image) {
       background-size: contain;
       background-repeat: no-repeat;
     `)
+    
+    // ============ 方法0: 使用 OpenCV 解码 (颜色/低对比更鲁棒) ============
+    const { imageData: baseImageData } = getImageDataAtScale(img, 1, false)
+    let openCVText = await tryOpenCVDecodeFromImageData(baseImageData, '1x')
+    if (openCVText) {
+      console.log('[QR解码] 内容:', openCVText)
+      return openCVText
+    }
+    
+    const { imageData: scaledImageData } = getImageDataAtScale(img, 2, false)
+    openCVText = await tryOpenCVDecodeFromImageData(scaledImageData, '2x')
+    if (openCVText) {
+      console.log('[QR解码] 内容:', openCVText)
+      return openCVText
+    }
     
     // ============ 方法1: 使用 jsQR (更简单可靠) ============
     console.log('[QR解码] 尝试使用 jsQR 库...')
@@ -870,4 +1030,67 @@ export async function decodeQRCode(base64Image) {
     console.error('[QR解码] 解码过程出错:', error)
     return null
   }
+}
+
+/**
+ * 从源画布按检测结果裁剪并放大后解码
+ * @param {HTMLCanvasElement} sourceCanvas - 源canvas
+ * @param {Object} detection - 检测结果
+ * @param {Object} options - 配置
+ * @returns {Promise<string|null>} 解码后的文本内容
+ */
+export async function decodeQRCodeFromCanvas(sourceCanvas, detection, options = {}) {
+  const {
+    paddingRatio = 0.3,
+    targetSize = 960,
+    backgroundColor = '#ffffff'
+  } = options
+  
+  if (!sourceCanvas || !detection || !detection.boundingBox) {
+    return null
+  }
+  
+  const { x, y, width, height } = detection.boundingBox
+  const padX = width * paddingRatio
+  const padY = height * paddingRatio
+  
+  const roiX = Math.max(0, Math.floor(x - padX))
+  const roiY = Math.max(0, Math.floor(y - padY))
+  const roiWidth = Math.min(
+    sourceCanvas.width - roiX,
+    Math.ceil(width + padX * 2)
+  )
+  const roiHeight = Math.min(
+    sourceCanvas.height - roiY,
+    Math.ceil(height + padY * 2)
+  )
+  
+  if (roiWidth <= 0 || roiHeight <= 0) {
+    return null
+  }
+  
+  const maxSide = Math.max(roiWidth, roiHeight)
+  const scale = maxSide > 0 ? Math.max(1, targetSize / maxSide) : 1
+  const outWidth = Math.max(1, Math.round(roiWidth * scale))
+  const outHeight = Math.max(1, Math.round(roiHeight * scale))
+  
+  const canvas = document.createElement('canvas')
+  canvas.width = outWidth
+  canvas.height = outHeight
+  
+  const ctx = canvas.getContext('2d')
+  ctx.imageSmoothingEnabled = false
+  
+  if (backgroundColor) {
+    ctx.fillStyle = backgroundColor
+    ctx.fillRect(0, 0, outWidth, outHeight)
+  }
+  
+  ctx.drawImage(
+    sourceCanvas,
+    roiX, roiY, roiWidth, roiHeight,
+    0, 0, outWidth, outHeight
+  )
+  
+  return decodeQRCode(canvas.toDataURL('image/png'))
 }
