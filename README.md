@@ -8,11 +8,20 @@ Precisely locate QR codes in images, auto-crop and decode.
 ### 项目简介
 本项目是一个基于浏览器的二维码定位与解码工具，支持摄像头拍照与图片上传两种模式。检测与解码均在本地完成，不上传图片。
 
+### 项目预览
+![应用截图](assets/screenshot.png)
+
 ### 功能亮点
 - 多策略定位二维码，标记四角与中心点
 - 自动截取二维码区域并尝试解码内容
 - 摄像头拍照与拖拽/上传图片双模式
 - 结果可视化与一键复制解码内容
+
+### 强大之处
+- 检测与解码双引擎：OpenCV.js 负责定位与校验，jsQR 作为补充解码
+- 多种预处理策略轮询，提高复杂场景与低对比度图像的识别成功率
+- 自动裁剪 + 透视校正 + 放大解码，最大化还原二维码细节
+- 全程本地处理，图片不上传，隐私更安全
 
 ### 技术栈
 - Vue 2 + Vue CLI
@@ -71,11 +80,20 @@ server {
 ### Overview
 Browser-based QR locator and decoder with two modes: camera capture and image upload. All processing runs locally in the browser; no image is uploaded.
 
+### Screenshot
+![App Screenshot](assets/screenshot.png)
+
 ### Highlights
 - Multi-strategy QR detection with corner/center markers
 - Auto-crop the QR area and try decoding
 - Camera capture and drag-and-drop upload
 - Visual result overlay and one-click copy
+
+### Why It’s Powerful
+- Dual engines: OpenCV.js for detection/validation, jsQR as a decode fallback
+- Multi-step preprocessing to improve detection in low-contrast or noisy images
+- Auto-crop + perspective warp + upscaling to maximize decoding success
+- 100% local processing, no image upload for better privacy
 
 ### Tech Stack
 - Vue 2 + Vue CLI
