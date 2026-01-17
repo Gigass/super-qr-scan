@@ -780,6 +780,37 @@ function binarizeImageData(imageData) {
   return new ImageData(out, width, height)
 }
 
+const JSQR_SCALE_CANDIDATES = [1, 2, 3, 4]
+const JSQR_MAX_PIXELS = 9000000
+
+function formatScale(scale) {
+  return Number.isInteger(scale) ? String(scale) : scale.toFixed(2)
+}
+
+function getJsqrScales(img, maxPixels = JSQR_MAX_PIXELS) {
+  const basePixels = img.width * img.height
+  let maxScale = 1
+  
+  if (basePixels > 0 && Number.isFinite(maxPixels) && maxPixels > 0) {
+    maxScale = Math.max(1, Math.sqrt(maxPixels / basePixels))
+  }
+  
+  const scales = []
+  let lastScale = null
+  
+  for (const scale of JSQR_SCALE_CANDIDATES) {
+    const candidate = Math.max(1, Math.min(scale, maxScale))
+    const rounded = Math.round(candidate * 100) / 100
+    
+    if (lastScale === null || Math.abs(rounded - lastScale) > 0.01) {
+      scales.push(rounded)
+      lastScale = rounded
+    }
+  }
+  
+  return scales.length ? scales : [1]
+}
+
 async function tryOpenCVDecodeFromImageData(imageData, label) {
   if (typeof cv === 'undefined' || !cv.QRCodeDetector) return null
   
@@ -908,14 +939,16 @@ export async function decodeQRCode(base64Image) {
     `)
     
     // ============ 方法0: 使用 OpenCV 解码 (颜色/低对比更鲁棒) ============
-    const { imageData: baseImageData } = getImageDataAtScale(img, 1, false)
+    const baseResult = getImageDataAtScale(img, 1, false)
+    const { imageData: baseImageData } = baseResult
     let openCVText = await tryOpenCVDecodeFromImageData(baseImageData, '1x')
     if (openCVText) {
       console.log('[QR解码] 内容:', openCVText)
       return openCVText
     }
     
-    const { imageData: scaledImageData } = getImageDataAtScale(img, 2, false)
+    const scaledResult = getImageDataAtScale(img, 2, false)
+    const { imageData: scaledImageData } = scaledResult
     openCVText = await tryOpenCVDecodeFromImageData(scaledImageData, '2x')
     if (openCVText) {
       console.log('[QR解码] 内容:', openCVText)
@@ -927,36 +960,27 @@ export async function decodeQRCode(base64Image) {
     const jsQR = (await import('jsqr')).default
     
     // 尝试不同的放大倍数
-    const scales = [1, 2, 3, 4]
+    const scales = getJsqrScales(img)
+    const scaleCache = new Map([
+      [1, baseResult],
+      [2, scaledResult]
+    ])
+    const getScaleData = (scale) => scaleCache.get(scale) || getImageDataAtScale(img, scale, false)
     
+    console.log('[QR解码] jsQR 固定使用二值化处理')
     for (const scale of scales) {
-      console.log(`[QR解码] jsQR 尝试 ${scale}x 放大(无插值)...`)
-      const { imageData, canvas } = getImageDataAtScale(img, scale, false)
+      const scaleLabel = formatScale(scale)
+      console.log(`[QR解码] jsQR 尝试 ${scaleLabel}x 放大(二值化)...`)
+      const { imageData, canvas } = getScaleData(scale)
       console.log(`[QR解码] 处理后尺寸: ${canvas.width} x ${canvas.height}`)
-      
-      const code = jsQR(imageData.data, imageData.width, imageData.height, {
-        inversionAttempts: 'attemptBoth'
-      })
-      
-      if (code && code.data) {
-        console.log(`[QR解码] ✓ jsQR 解码成功! (${scale}x 放大)`)
-        console.log('[QR解码] 内容:', code.data)
-        return code.data
-      }
-    }
-    
-    for (const scale of scales) {
-      console.log(`[QR解码] jsQR 尝试 ${scale}x 放大(二值化)...`)
-      const { imageData, canvas } = getImageDataAtScale(img, scale, false)
       const binarized = binarizeImageData(imageData)
-      console.log(`[QR解码] 处理后尺寸: ${canvas.width} x ${canvas.height}`)
       
       const code = jsQR(binarized.data, binarized.width, binarized.height, {
         inversionAttempts: 'attemptBoth'
       })
       
       if (code && code.data) {
-        console.log(`[QR解码] ✓ jsQR 解码成功! (${scale}x 放大, 二值化)`)
+        console.log(`[QR解码] ✓ jsQR 解码成功! (${scaleLabel}x 放大, 二值化)`)
         console.log('[QR解码] 内容:', code.data)
         return code.data
       }
