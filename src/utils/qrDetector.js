@@ -607,3 +607,267 @@ export async function preloadOpenCV() {
 export function isOpenCVReady() {
   return cvReady
 }
+
+/**
+ * 截取QR码区域图像 (带边距扩展)
+ * @param {HTMLCanvasElement} sourceCanvas - 源canvas
+ * @param {Object} detection - 检测结果
+ * @param {number} margin - 边距扩展比例 (默认0.1,即10%)
+ * @returns {string} Base64图像数据
+ */
+export function extractQRCodeImage(sourceCanvas, detection, margin = 0.1) {
+  const { boundingBox } = detection
+  const { x, y, width, height } = boundingBox
+  
+  // 计算边距
+  const marginX = width * margin
+  const marginY = height * margin
+  
+  // 计算扩展后的区域 (确保不超出画布边界)
+  const expandedX = Math.max(0, Math.floor(x - marginX))
+  const expandedY = Math.max(0, Math.floor(y - marginY))
+  const expandedWidth = Math.min(
+    sourceCanvas.width - expandedX,
+    Math.ceil(width + marginX * 2)
+  )
+  const expandedHeight = Math.min(
+    sourceCanvas.height - expandedY,
+    Math.ceil(height + marginY * 2)
+  )
+  
+  // 创建临时canvas用于截取
+  const tempCanvas = document.createElement('canvas')
+  tempCanvas.width = Math.max(1, expandedWidth)
+  tempCanvas.height = Math.max(1, expandedHeight)
+  
+  const ctx = tempCanvas.getContext('2d')
+  ctx.imageSmoothingEnabled = false
+  
+  // 截取扩展后的区域
+  ctx.drawImage(
+    sourceCanvas,
+    expandedX, expandedY, expandedWidth, expandedHeight,
+    0, 0, expandedWidth, expandedHeight
+  )
+  
+  // 返回Base64图像
+  return tempCanvas.toDataURL('image/png')
+}
+
+function createScaledCanvas(img, scale, smoothing) {
+  const canvas = document.createElement('canvas')
+  const width = Math.max(1, Math.round(img.width * scale))
+  const height = Math.max(1, Math.round(img.height * scale))
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')
+  ctx.imageSmoothingEnabled = smoothing
+  if (smoothing) {
+    ctx.imageSmoothingQuality = 'high'
+  }
+  ctx.drawImage(img, 0, 0, width, height)
+  return { canvas, ctx }
+}
+
+function getImageDataAtScale(img, scale, smoothing) {
+  const { canvas, ctx } = createScaledCanvas(img, scale, smoothing)
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  return { canvas, imageData }
+}
+
+function otsuThresholdArray(gray) {
+  const hist = new Array(256).fill(0)
+  const total = gray.length
+  for (let i = 0; i < total; i++) {
+    hist[gray[i]] += 1
+  }
+  
+  let sum = 0
+  for (let i = 0; i < 256; i++) {
+    sum += i * hist[i]
+  }
+  
+  let sumB = 0
+  let wB = 0
+  let wF = 0
+  let varMax = 0
+  let threshold = 0
+  
+  for (let i = 0; i < 256; i++) {
+    wB += hist[i]
+    if (wB === 0) continue
+    wF = total - wB
+    if (wF === 0) break
+    sumB += i * hist[i]
+    const mB = sumB / wB
+    const mF = (sum - sumB) / wF
+    const between = wB * wF * (mB - mF) * (mB - mF)
+    if (between > varMax) {
+      varMax = between
+      threshold = i
+    }
+  }
+  
+  return threshold
+}
+
+function binarizeImageData(imageData) {
+  const { data, width, height } = imageData
+  const gray = new Uint8Array(width * height)
+  let gi = 0
+  for (let i = 0; i < data.length; i += 4) {
+    const alpha = data[i + 3]
+    const lum = alpha < 128
+      ? 255
+      : Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2])
+    gray[gi] = lum
+    gi += 1
+  }
+  
+  const threshold = otsuThresholdArray(gray)
+  const out = new Uint8ClampedArray(data.length)
+  gi = 0
+  for (let i = 0; i < out.length; i += 4) {
+    const v = gray[gi] > threshold ? 255 : 0
+    out[i] = v
+    out[i + 1] = v
+    out[i + 2] = v
+    out[i + 3] = 255
+    gi += 1
+  }
+  
+  return new ImageData(out, width, height)
+}
+
+function imageDataToCanvas(imageData) {
+  const canvas = document.createElement('canvas')
+  canvas.width = imageData.width
+  canvas.height = imageData.height
+  const ctx = canvas.getContext('2d')
+  ctx.putImageData(imageData, 0, 0)
+  return canvas
+}
+
+/**
+ * 解码QR码内容 (主要使用 jsQR，ZXing 作为后备)
+ * @param {string} base64Image - Base64图像字符串
+ * @returns {Promise<string|null>} 解码后的文本内容
+ */
+export async function decodeQRCode(base64Image) {
+  try {
+    console.log('[QR解码] 开始解码...')
+    
+    // 从 Base64 创建 Image 对象
+    const img = new Image()
+    await new Promise((resolve, reject) => {
+      img.onload = resolve
+      img.onerror = () => reject(new Error('图像加载失败'))
+      img.src = base64Image
+    })
+    
+    console.log('[QR解码] 原始图像尺寸:', img.width, 'x', img.height)
+    
+    // 在控制台显示截取的图像(用于调试)
+    console.log('[QR解码] 截取的图像预览:')
+    console.log('%c ', `
+      font-size: 1px;
+      padding: ${Math.min(img.height / 2, 100)}px ${Math.min(img.width / 2, 100)}px;
+      background-image: url(${base64Image});
+      background-size: contain;
+      background-repeat: no-repeat;
+    `)
+    
+    // ============ 方法1: 使用 jsQR (更简单可靠) ============
+    console.log('[QR解码] 尝试使用 jsQR 库...')
+    const jsQR = (await import('jsqr')).default
+    
+    // 尝试不同的放大倍数
+    const scales = [1, 2, 3, 4]
+    
+    for (const scale of scales) {
+      console.log(`[QR解码] jsQR 尝试 ${scale}x 放大(无插值)...`)
+      const { imageData, canvas } = getImageDataAtScale(img, scale, false)
+      console.log(`[QR解码] 处理后尺寸: ${canvas.width} x ${canvas.height}`)
+      
+      const code = jsQR(imageData.data, imageData.width, imageData.height, {
+        inversionAttempts: 'attemptBoth'
+      })
+      
+      if (code && code.data) {
+        console.log(`[QR解码] ✓ jsQR 解码成功! (${scale}x 放大)`)
+        console.log('[QR解码] 内容:', code.data)
+        return code.data
+      }
+    }
+    
+    for (const scale of scales) {
+      console.log(`[QR解码] jsQR 尝试 ${scale}x 放大(二值化)...`)
+      const { imageData, canvas } = getImageDataAtScale(img, scale, false)
+      const binarized = binarizeImageData(imageData)
+      console.log(`[QR解码] 处理后尺寸: ${canvas.width} x ${canvas.height}`)
+      
+      const code = jsQR(binarized.data, binarized.width, binarized.height, {
+        inversionAttempts: 'attemptBoth'
+      })
+      
+      if (code && code.data) {
+        console.log(`[QR解码] ✓ jsQR 解码成功! (${scale}x 放大, 二值化)`)
+        console.log('[QR解码] 内容:', code.data)
+        return code.data
+      }
+    }
+    
+    console.log('[QR解码] jsQR 未能解码，尝试 ZXing 作为后备...')
+    
+    // ============ 方法2: 使用 ZXing 作为后备 ============
+    try {
+      const { BrowserQRCodeReader } = await import('@zxing/browser')
+      const codeReader = new BrowserQRCodeReader()
+      
+      for (const scale of scales) {
+        try {
+          console.log(`[QR解码] ZXing 尝试 ${scale}x 放大(无插值)...`)
+          const { canvas } = getImageDataAtScale(img, scale, false)
+          
+          const result = codeReader.decodeFromCanvas(canvas)
+          
+          if (result && result.getText()) {
+            console.log(`[QR解码] ✓ ZXing 解码成功! (${scale}x 放大)`)
+            console.log('[QR解码] 内容:', result.getText())
+            return result.getText()
+          }
+        } catch (zxingError) {
+          console.log(`[QR解码] ZXing ${scale}x 放大失败:`, zxingError.message || zxingError)
+        }
+      }
+      
+      for (const scale of scales) {
+        try {
+          console.log(`[QR解码] ZXing 尝试 ${scale}x 放大(二值化)...`)
+          const { imageData } = getImageDataAtScale(img, scale, false)
+          const binarized = binarizeImageData(imageData)
+          const canvas = imageDataToCanvas(binarized)
+          
+          const result = codeReader.decodeFromCanvas(canvas)
+          
+          if (result && result.getText()) {
+            console.log(`[QR解码] ✓ ZXing 解码成功! (${scale}x 放大, 二值化)`)
+            console.log('[QR解码] 内容:', result.getText())
+            return result.getText()
+          }
+        } catch (zxingError) {
+          console.log(`[QR解码] ZXing ${scale}x 二值化失败:`, zxingError.message || zxingError)
+        }
+      }
+    } catch (zxingImportError) {
+      console.warn('[QR解码] ZXing 库导入失败:', zxingImportError.message)
+    }
+    
+    console.log('[QR解码] ✗ 所有方法都无法解码')
+    console.log('[QR解码] 提示: 请检查截取的图像是否包含完整、清晰的二维码')
+    return null
+  } catch (error) {
+    console.error('[QR解码] 解码过程出错:', error)
+    return null
+  }
+}

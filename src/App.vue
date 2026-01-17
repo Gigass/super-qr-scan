@@ -237,6 +237,54 @@
             </div>
           </div>
         </div>
+
+        <!-- QR码截图和解码信息 -->
+        <div v-if="qrCodeImage || qrCodeContent" class="qr-extract-section">
+          <!-- QR码截图 -->
+          <div v-if="qrCodeImage" class="qr-image-preview">
+            <h4 class="extract-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 21"/>
+              </svg>
+              二维码截图
+            </h4>
+            <div class="qr-image-container">
+              <img :src="qrCodeImage" alt="QR码截图" class="qr-image" />
+            </div>
+          </div>
+
+          <!-- 解码内容 -->
+          <div v-if="qrCodeContent" class="qr-decode-content">
+            <h4 class="extract-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                <polyline points="4 17 10 11 4 5"/>
+                <line x1="12" y1="19" x2="20" y2="19"/>
+              </svg>
+              解码内容
+            </h4>
+            <div class="decode-text-container">
+              <pre class="decode-text">{{ qrCodeContent }}</pre>
+              <button class="copy-btn" @click="copyToClipboard" title="复制内容">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- 无法解码提示 -->
+          <div v-else-if="qrCodeImage && !qrCodeContent" class="qr-decode-failed">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <span>未能解码二维码内容</span>
+          </div>
+        </div>
       </div>
 
       <!-- 未检测到二维码 -->
@@ -273,14 +321,14 @@
 </template>
 
 <script>
-import { detectQRCode, drawDetectionResult, getImageDataFromFile, preloadOpenCV } from './utils/qrDetector'
+import { detectQRCode, drawDetectionResult, getImageDataFromFile, preloadOpenCV, extractQRCodeImage, decodeQRCode } from './utils/qrDetector'
 
 export default {
   name: 'App',
   
   data() {
     return {
-      // 模式：camera | upload
+      // 模式:camera | upload
       mode: 'camera',
       
       // 摄像头状态
@@ -297,6 +345,10 @@ export default {
       // 检测结果
       detectionResult: null,
       noQRFound: false,
+      
+      // QR码截图和解码
+      qrCodeImage: null,      // QR码截图 (Base64)
+      qrCodeContent: null,    // QR码解码内容
       
       // 状态
       isLoading: false,
@@ -395,7 +447,7 @@ export default {
       const canvas = this.$refs.canvasRef
       
       if (!video || video.readyState !== video.HAVE_ENOUGH_DATA) {
-        this.errorMessage = '视频流未就绪，请稍后重试'
+        this.errorMessage = '视频流未就绪,请稍后重试'
         return
       }
       
@@ -415,12 +467,20 @@ export default {
         // 获取图像数据
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
         
-        // 检测二维码（异步）
+        // 检测二维码(异步)
         const result = await detectQRCode(imageData)
         
         if (result) {
           this.detectionResult = result
-          // 绘制检测结果
+          
+          // 重要:先截取纯净的QR码图像(在绘制标记之前)
+          this.qrCodeImage = extractQRCodeImage(canvas, result, 0.15)
+          
+          // 解码QR码内容(使用截取的QR码图像)
+          this.qrCodeContent = await decodeQRCode(this.qrCodeImage)
+          console.log('[QR解码] 内容:', this.qrCodeContent)
+          
+          // 最后绘制检测结果(这样不会影响截图)
           drawDetectionResult(ctx, result)
         } else {
           this.noQRFound = true
@@ -501,12 +561,20 @@ export default {
         })
         ctx.drawImage(img, 0, 0)
         
-        // 检测二维码（异步）
+        // 检测二维码(异步)
         const result = await detectQRCode(imageData)
         
         if (result) {
           this.detectionResult = result
-          // 绘制检测结果
+          
+          // 重要:先截取纯净的QR码图像(在绘制标记之前)
+          this.qrCodeImage = extractQRCodeImage(canvas, result, 0.15)
+          
+          // 解码QR码内容(使用截取的QR码图像)
+          this.qrCodeContent = await decodeQRCode(this.qrCodeImage)
+          console.log('[QR解码] 内容:', this.qrCodeContent)
+          
+          // 最后绘制检测结果(这样不会影响截图)
           drawDetectionResult(ctx, result)
         } else {
           this.noQRFound = true
@@ -542,6 +610,31 @@ export default {
       this.detectionResult = null
       this.noQRFound = false
       this.errorMessage = ''
+      this.qrCodeImage = null
+      this.qrCodeContent = null
+    },
+
+    /**
+     * 复制解码内容到剪贴板
+     */
+    async copyToClipboard() {
+      if (!this.qrCodeContent) return
+      
+      try {
+        await navigator.clipboard.writeText(this.qrCodeContent)
+        // 简单的视觉反馈
+        const btn = event.target.closest('.copy-btn')
+        if (btn) {
+          const originalHTML = btn.innerHTML
+          btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="20 6 9 17 4 12"/></svg>'
+          setTimeout(() => {
+            btn.innerHTML = originalHTML
+          }, 1500)
+        }
+      } catch (error) {
+        console.error('复制失败:', error)
+        this.errorMessage = '复制失败,请手动复制'
+      }
     }
   },
 
@@ -625,6 +718,7 @@ export default {
 .app-main {
   flex: 1;
   padding: 20px;
+  padding-bottom: 40px;
   max-width: 600px;
   margin: 0 auto;
   width: 100%;
@@ -1018,6 +1112,125 @@ export default {
   color: var(--text-muted);
 }
 
+/* QR码截图和解码信息 */
+.qr-extract-section {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.extract-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.extract-title svg {
+  color: var(--primary-color);
+}
+
+/* QR码截图预览 */
+.qr-image-preview {
+  width: 100%;
+}
+
+.qr-image-container {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  background: var(--bg-glass);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+}
+
+.qr-image {
+  max-width: 200px;
+  max-height: 200px;
+  width: auto;
+  height: auto;
+  border-radius: var(--radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: transform var(--transition-normal);
+}
+
+.qr-image:hover {
+  transform: scale(1.05);
+}
+
+/* 解码内容 */
+.qr-decode-content {
+  width: 100%;
+}
+
+.decode-text-container {
+  position: relative;
+  background: var(--bg-glass);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  padding-right: 48px;
+}
+
+.decode-text {
+  margin: 0;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--accent-color);
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.copy-btn:hover {
+  background: var(--primary-color);
+  border-color: var(--primary-color);
+  color: white;
+  transform: scale(1.05);
+}
+
+.copy-btn:active {
+  transform: scale(0.95);
+}
+
+/* 解码失败提示 */
+.qr-decode-failed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  border-radius: var(--radius-md);
+  color: #ffc107;
+  font-size: 14px;
+}
+
 /* ========================================
    错误提示
    ======================================== */
@@ -1073,6 +1286,15 @@ export default {
   
   .coords-grid {
     grid-template-columns: 1fr;
+  }
+  
+  .qr-image {
+    max-width: 150px;
+    max-height: 150px;
+  }
+  
+  .decode-text {
+    font-size: 12px;
   }
 }
 </style>
