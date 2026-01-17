@@ -58,13 +58,7 @@
           
           <!-- 扫描框叠加层 -->
           <div v-if="cameraActive && !capturedImage" class="scan-overlay">
-            <div class="scan-frame">
-              <div class="scan-corner top-left"></div>
-              <div class="scan-corner top-right"></div>
-              <div class="scan-corner bottom-left"></div>
-              <div class="scan-corner bottom-right"></div>
-              <div class="scan-line"></div>
-            </div>
+            <div class="scan-hint">请把完整单据放到扫描框内后拍摄</div>
           </div>
 
           <!-- 拍照结果预览 -->
@@ -77,7 +71,7 @@
           <!-- 加载状态 -->
           <div v-if="isLoading" class="loading-overlay">
             <div class="loading-spinner"></div>
-            <p>正在检测...</p>
+            <p>正在解析二维码...</p>
           </div>
         </div>
 
@@ -165,7 +159,7 @@
           <!-- 加载状态 -->
           <div v-if="isLoading" class="loading-overlay">
             <div class="loading-spinner"></div>
-            <p>正在检测...</p>
+            <p>正在解析二维码...</p>
           </div>
         </div>
 
@@ -191,79 +185,16 @@
 
       <!-- 检测结果信息 -->
       <div v-if="detectionResult" class="result-info glass animate-fadeIn">
-        <div class="result-header">
-          <div class="result-status success">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-              <polyline points="22 4 12 14.01 9 11.01"/>
-            </svg>
-            <span>检测成功</span>
-          </div>
-        </div>
-        
-        <div class="result-details">
-          <div class="detail-item">
-            <span class="detail-label">中心坐标</span>
-            <span class="detail-value">
-              ({{ Math.round(detectionResult.center.x) }}, {{ Math.round(detectionResult.center.y) }})
-            </span>
-          </div>
-          <div class="detail-item">
-            <span class="detail-label">尺寸</span>
-            <span class="detail-value">
-              {{ Math.round(detectionResult.boundingBox.width) }} × {{ Math.round(detectionResult.boundingBox.height) }} px
-            </span>
-          </div>
-        </div>
-
-        <div class="corner-coords">
-          <h4>角点坐标</h4>
-          <div class="coords-grid">
-            <div class="coord-item">
-              <span class="coord-label">左上</span>
-              <span class="coord-value">({{ Math.round(detectionResult.topLeft.x) }}, {{ Math.round(detectionResult.topLeft.y) }})</span>
-            </div>
-            <div class="coord-item">
-              <span class="coord-label">右上</span>
-              <span class="coord-value">({{ Math.round(detectionResult.topRight.x) }}, {{ Math.round(detectionResult.topRight.y) }})</span>
-            </div>
-            <div class="coord-item">
-              <span class="coord-label">左下</span>
-              <span class="coord-value">({{ Math.round(detectionResult.bottomLeft.x) }}, {{ Math.round(detectionResult.bottomLeft.y) }})</span>
-            </div>
-            <div class="coord-item">
-              <span class="coord-label">右下</span>
-              <span class="coord-value">({{ Math.round(detectionResult.bottomRight.x) }}, {{ Math.round(detectionResult.bottomRight.y) }})</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- QR码截图和解码信息 -->
-        <div v-if="qrCodeImage || qrCodeContent" class="qr-extract-section">
-          <!-- QR码截图 -->
-          <div v-if="qrCodeImage" class="qr-image-preview">
-            <h4 class="extract-title">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                <rect x="3" y="3" width="18" height="18" rx="2"/>
-                <circle cx="8.5" cy="8.5" r="1.5"/>
-                <polyline points="21 15 16 10 5 21"/>
-              </svg>
-              二维码截图
-            </h4>
-            <div ref="qrImageContainerRef" class="qr-image-container">
-              <img ref="qrImageRef" :src="qrCodeImage" alt="QR码截图" class="qr-image" />
+        <div class="result-stack">
+          <div v-if="fullImage" class="full-image-preview">
+            <h4 class="extract-title">完整图片</h4>
+            <div class="full-image-container">
+              <img :src="fullImage" alt="完整图片" class="full-image" />
             </div>
           </div>
 
-          <!-- 解码内容 -->
           <div v-if="qrCodeContent" class="qr-decode-content">
-            <h4 class="extract-title">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                <polyline points="4 17 10 11 4 5"/>
-                <line x1="12" y1="19" x2="20" y2="19"/>
-              </svg>
-              解码内容
-            </h4>
+            <h4 class="extract-title">二维码内容</h4>
             <div class="decode-text-container">
               <pre class="decode-text">{{ qrCodeContent }}</pre>
               <button class="copy-btn" @click="copyToClipboard" title="复制内容">
@@ -275,8 +206,7 @@
             </div>
           </div>
 
-          <!-- 无法解码提示 -->
-          <div v-else-if="qrCodeImage && !qrCodeContent" class="qr-decode-failed">
+          <div v-else class="qr-decode-failed">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
               <circle cx="12" cy="12" r="10"/>
               <line x1="12" y1="8" x2="12" y2="12"/>
@@ -420,6 +350,7 @@ export default {
       // QR码截图和解码
       qrCodeImage: null,      // QR码截图 (Base64)
       qrCodeContent: null,    // QR码解码内容
+      fullImage: null,        // 完整图片 (Base64)
       
       // 状态
       isLoading: false,
@@ -572,7 +503,7 @@ export default {
         return
       }
       
-      this.isLoading = true
+      this.isLoading = false
       this.clearResults()
       
       try {
@@ -584,6 +515,13 @@ export default {
         
         // 绘制视频帧到 canvas
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+        // 立即生成拍摄图片并展示
+        this.fullImage = canvas.toDataURL('image/png')
+        this.capturedImage = true
+        await this.$nextTick()
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+        this.isLoading = true
         
         // 获取图像数据
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
@@ -609,7 +547,6 @@ export default {
           this.noQRFound = true
         }
         
-        this.capturedImage = true
       } catch (error) {
         console.error('检测失败:', error)
         this.errorMessage = '检测过程中发生错误'
@@ -691,6 +628,7 @@ export default {
           this.detectionResult = result
           
           // 重要:先截取纯净的QR码图像(在绘制标记之前)
+          this.fullImage = imageSrc
           this.qrCodeImage = extractQRCodeImage(canvas, result, 0.15)
           
           // 解码QR码内容(检测阶段已验证则复用)
@@ -737,6 +675,7 @@ export default {
       this.errorMessage = ''
       this.qrCodeImage = null
       this.qrCodeContent = null
+      this.fullImage = null
     },
 
     /**
@@ -935,62 +874,19 @@ export default {
   background: rgba(0, 0, 0, 0.3);
 }
 
-.scan-frame {
-  position: relative;
-  width: 70%;
-  max-width: 280px;
-  aspect-ratio: 1;
-  border: 2px solid rgba(0, 245, 160, 0.5);
-  border-radius: var(--radius-md);
-  animation: breathGlow 2s ease-in-out infinite;
-}
-
-.scan-corner {
+.scan-hint {
   position: absolute;
-  width: 20px;
-  height: 20px;
-  border: 3px solid var(--accent-color);
-}
-
-.scan-corner.top-left {
-  top: -2px;
-  left: -2px;
-  border-right: none;
-  border-bottom: none;
-  border-top-left-radius: 8px;
-}
-
-.scan-corner.top-right {
-  top: -2px;
-  right: -2px;
-  border-left: none;
-  border-bottom: none;
-  border-top-right-radius: 8px;
-}
-
-.scan-corner.bottom-left {
-  bottom: -2px;
-  left: -2px;
-  border-right: none;
-  border-top: none;
-  border-bottom-left-radius: 8px;
-}
-
-.scan-corner.bottom-right {
-  bottom: -2px;
-  right: -2px;
-  border-left: none;
-  border-top: none;
-  border-bottom-right-radius: 8px;
-}
-
-.scan-line {
-  position: absolute;
-  left: 10%;
-  width: 80%;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, var(--accent-color), transparent);
-  animation: scanLine 2s linear infinite;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
 }
 
 /* 摄像头控制 */
@@ -1123,6 +1019,7 @@ export default {
   left: 0;
   width: 100%;
   height: 100%;
+  z-index: 2;
   background: rgba(15, 15, 35, 0.9);
   display: flex;
   flex-direction: column;
@@ -1170,78 +1067,13 @@ export default {
   color: #ff6b6b;
 }
 
-.result-details {
-  display: flex;
-  gap: 24px;
-  margin-bottom: 16px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.detail-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.detail-label {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.detail-value {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-  font-family: 'SF Mono', 'Fira Code', monospace;
-}
-
-.corner-coords h4 {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 12px;
-}
-
-.coords-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-}
-
-.coord-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 14px;
-  background: var(--bg-glass);
-  border-radius: var(--radius-sm);
-}
-
-.coord-label {
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-.coord-value {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--accent-color);
-  font-family: 'SF Mono', 'Fira Code', monospace;
-}
-
 .no-result-hint {
   font-size: 14px;
   color: var(--text-muted);
 }
 
-/* QR码截图和解码信息 */
-.qr-extract-section {
-  margin-top: 20px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border-color);
+/* 解码结果 */
+.result-stack {
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -1261,32 +1093,25 @@ export default {
   color: var(--primary-color);
 }
 
-/* QR码截图预览 */
-.qr-image-preview {
+/* 完整图片预览 */
+.full-image-preview {
   width: 100%;
 }
 
-.qr-image-container {
+.full-image-container {
   display: flex;
   justify-content: center;
-  padding: 16px;
+  padding: 12px;
   background: var(--bg-glass);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
 }
 
-.qr-image {
-  max-width: 200px;
-  max-height: 200px;
-  width: auto;
+.full-image {
+  width: 100%;
   height: auto;
   border-radius: var(--radius-sm);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  transition: transform var(--transition-normal);
-}
-
-.qr-image:hover {
-  transform: scale(1.05);
 }
 
 /* 解码内容 */
@@ -1404,18 +1229,8 @@ export default {
     font-size: 14px;
   }
   
-  .result-details {
-    flex-direction: column;
-    gap: 12px;
-  }
-  
-  .coords-grid {
-    grid-template-columns: 1fr;
-  }
-  
-  .qr-image {
-    max-width: 150px;
-    max-height: 150px;
+  .full-image {
+    max-width: 100%;
   }
   
   .decode-text {

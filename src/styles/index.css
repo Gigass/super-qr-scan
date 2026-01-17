@@ -181,28 +181,6 @@ body {
   }
 }
 
-/* 扫描线动画 */
-@keyframes scanLine {
-  0% {
-    top: 0;
-  }
-  100% {
-    top: 100%;
-  }
-}
-
-/* 呼吸发光动画 */
-@keyframes breathGlow {
-  0%,
-  100% {
-    box-shadow: 0 0 20px var(--accent-color), inset 0 0 20px transparent;
-  }
-  50% {
-    box-shadow: 0 0 40px var(--accent-color),
-      inset 0 0 30px rgba(0, 245, 160, 0.1);
-  }
-}
-
 /* 淡入动画 */
 @keyframes fadeIn {
   from {
