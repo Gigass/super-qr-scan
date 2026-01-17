@@ -589,7 +589,7 @@ export default {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
         
         // 检测二维码(异步)
-        const result = await detectQRCode(imageData)
+        const result = await detectQRCode(imageData, canvas)
         
         if (result) {
           this.detectionResult = result
@@ -597,8 +597,10 @@ export default {
           // 重要:先截取纯净的QR码图像(在绘制标记之前)
           this.qrCodeImage = extractQRCodeImage(canvas, result, 0.15)
           
-          // 解码QR码内容(使用源画布ROI放大)
-          this.qrCodeContent = await this.decodeFromSourceCanvas(canvas, result)
+          // 解码QR码内容(检测阶段已验证则复用)
+          this.qrCodeContent = result.decodedText
+            ? result.decodedText
+            : await this.decodeFromSourceCanvas(canvas, result)
           console.log('[QR解码] 内容:', this.qrCodeContent)
           
           // 最后绘制检测结果(这样不会影响截图)
@@ -683,7 +685,7 @@ export default {
         ctx.drawImage(img, 0, 0)
         
         // 检测二维码(异步)
-        const result = await detectQRCode(imageData)
+        const result = await detectQRCode(imageData, canvas)
         
         if (result) {
           this.detectionResult = result
@@ -691,8 +693,10 @@ export default {
           // 重要:先截取纯净的QR码图像(在绘制标记之前)
           this.qrCodeImage = extractQRCodeImage(canvas, result, 0.15)
           
-          // 解码QR码内容(使用源画布ROI放大)
-          this.qrCodeContent = await this.decodeFromSourceCanvas(canvas, result)
+          // 解码QR码内容(检测阶段已验证则复用)
+          this.qrCodeContent = result.decodedText
+            ? result.decodedText
+            : await this.decodeFromSourceCanvas(canvas, result)
           console.log('[QR解码] 内容:', this.qrCodeContent)
           
           // 最后绘制检测结果(这样不会影响截图)

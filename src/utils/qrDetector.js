@@ -216,7 +216,7 @@ function sharpenStrong(gray) {
  * @param {ImageData} imageData - Canvas 的 ImageData 对象
  * @returns {Promise<Object|null>} 检测结果，包含位置信息
  */
-export async function detectQRCode(imageData) {
+export async function detectQRCode(imageData, sourceCanvas = null) {
   const matsToDelete = [] // 统一管理需要释放的 Mat
   
   try {
@@ -295,7 +295,19 @@ export async function detectQRCode(imageData) {
       { name: '放大4倍+对比度+Otsu', steps: ['scale_4', 'contrast', 'otsu'] }
     ]
     
-    const detectWithStrategies = (label, baseGray, baseScale, strategyList) => {
+    let validationCanvas = sourceCanvas
+    const ensureValidationCanvas = () => {
+      if (validationCanvas) return validationCanvas
+      const canvas = document.createElement('canvas')
+      canvas.width = imageData.width
+      canvas.height = imageData.height
+      const ctx = canvas.getContext('2d')
+      ctx.putImageData(imageData, 0, 0)
+      validationCanvas = canvas
+      return validationCanvas
+    }
+    
+    const detectWithStrategies = async (label, baseGray, baseScale, strategyList) => {
       let currentScale = 1
       const logPrefix = label ? `${label} ` : ''
       
@@ -381,7 +393,7 @@ export async function detectQRCode(imageData) {
           const corners = { topLeft, topRight, bottomRight, bottomLeft }
           const strategyName = label ? `${label}-${strategy.name}` : strategy.name
           
-          return {
+          const candidate = {
             topLeft,
             topRight,
             bottomRight,
@@ -397,6 +409,22 @@ export async function detectQRCode(imageData) {
               boundingBox: calculateBoundingBox(corners),
               center: calculateCenter(corners)
             }]
+          }
+          
+          const decodedText = await decodeQRCodeFromCanvas(ensureValidationCanvas(), candidate, {
+            paddingRatio: 0.35,
+            targetSize: 960,
+            backgroundColor: '#ffffff'
+          })
+          
+          if (!decodedText) {
+            console.log('[QR检测] ✗ 检测结果未通过解码校验，继续尝试')
+            continue
+          }
+          
+          return {
+            ...candidate,
+            decodedText
           }
         }
       }
@@ -428,7 +456,7 @@ export async function detectQRCode(imageData) {
     })
     
     for (const run of runs) {
-      const detection = detectWithStrategies(run.label, run.gray, run.baseScale, run.strategies)
+      const detection = await detectWithStrategies(run.label, run.gray, run.baseScale, run.strategies)
       if (detection) {
         result = detection
         break
