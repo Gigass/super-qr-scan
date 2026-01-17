@@ -11,9 +11,7 @@ let cvLoadPromise = null
 const DETECTION_STRATEGIES = [
   { name: '原图直接检测', steps: [] },
   { name: '对比度增强+Otsu', steps: ['contrast', 'otsu'] },
-  { name: 'Otsu二值化', steps: ['otsu'] },
   { name: '自适应二值化(高斯)', steps: ['adaptive'] },
-  { name: '去噪+自适应二值化', steps: ['blur', 'adaptive'] },
   { name: '放大2倍+对比度+Otsu', steps: ['scale_2', 'contrast', 'otsu'] },
   { name: '放大3倍', steps: ['scale_3'] }
 ]
