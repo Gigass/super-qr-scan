@@ -4,16 +4,17 @@
  */
 
 /* global cv */
+/* eslint-disable no-unused-vars */
 
 // OpenCV.js 加载状态
 let cvReady = false
 let cvLoadPromise = null
 const DETECTION_STRATEGIES = [
-  { name: '原图直接检测', steps: [] },
-  { name: '对比度增强+Otsu', steps: ['contrast', 'otsu'] },
-  { name: '自适应二值化(高斯)', steps: ['adaptive'] },
-  { name: '放大2倍+对比度+Otsu', steps: ['scale_2', 'contrast', 'otsu'] },
-  { name: '放大3倍', steps: ['scale_3'] }
+  { name: '放大3倍', steps: ['scale_3'] },
+  { name: '放大3倍+对比度增强+Otsu', steps: ['scale_3', 'contrast', 'otsu'] },
+  { name: '放大3倍+自适应二值化(高斯)', steps: ['scale_3', 'adaptive'] },
+  { name: '放大3倍+锐化', steps: ['scale_3', 'sharpen'] },
+  { name: '放大3倍+对比度+自适应二值化', steps: ['scale_3', 'contrast', 'adaptive'] }
 ]
 
 /**
@@ -329,7 +330,14 @@ export async function detectQRCode(imageData, sourceCanvas = null) {
           const bottomRight = { x: data[4] / denom, y: data[5] / denom }
           const bottomLeft = { x: data[6] / denom, y: data[7] / denom }
           
+          console.log('[QR检测] 缩放因子:', scale, ', 缩放后坐标:')
+          console.log('[QR检测] topLeft:', topLeft, 'topRight:', topRight)
+          console.log('[QR检测] bottomRight:', bottomRight, 'bottomLeft:', bottomLeft)
+          
           const corners = { topLeft, topRight, bottomRight, bottomLeft }
+          const boundingBox = calculateBoundingBox(corners)
+          console.log('[QR检测] 边界框:', boundingBox, ', 原图尺寸:', imageData.width, 'x', imageData.height)
+          
           const strategyName = label ? `${label}-${strategy.name}` : strategy.name
           
           const candidate = {
@@ -752,6 +760,7 @@ function otsuThresholdArray(gray) {
   return threshold
 }
 
+// 标准灰度二值化
 function binarizeImageData(imageData) {
   const { data, width, height } = imageData
   const gray = new Uint8Array(width * height)
@@ -778,6 +787,43 @@ function binarizeImageData(imageData) {
   }
   
   return new ImageData(out, width, height)
+}
+
+// 按指定通道提取并二值化 (channel: 0=R, 1=G, 2=B)
+function binarizeByChannel(imageData, channel, invert = false) {
+  const { data, width, height } = imageData
+  const channelData = new Uint8Array(width * height)
+  let gi = 0
+  for (let i = 0; i < data.length; i += 4) {
+    channelData[gi] = invert ? (255 - data[i + channel]) : data[i + channel]
+    gi += 1
+  }
+  
+  const threshold = otsuThresholdArray(channelData)
+  const out = new Uint8ClampedArray(data.length)
+  gi = 0
+  for (let i = 0; i < out.length; i += 4) {
+    const v = channelData[gi] > threshold ? 255 : 0
+    out[i] = v
+    out[i + 1] = v
+    out[i + 2] = v
+    out[i + 3] = 255
+    gi += 1
+  }
+  
+  return new ImageData(out, width, height)
+}
+
+// 获取所有二值化变体
+function getAllBinarizedVariants(imageData) {
+  return [
+    { name: '灰度', data: binarizeImageData(imageData) },
+    { name: '蓝通道反转', data: binarizeByChannel(imageData, 2, true) },
+    { name: '红通道', data: binarizeByChannel(imageData, 0, false) },
+    { name: '绿通道', data: binarizeByChannel(imageData, 1, false) },
+    { name: '蓝通道', data: binarizeByChannel(imageData, 2, false) },
+    { name: '红通道反转', data: binarizeByChannel(imageData, 0, true) },
+  ]
 }
 
 const JSQR_SCALE_CANDIDATES = [1, 2, 3, 4]
@@ -812,7 +858,11 @@ function getJsqrScales(img, maxPixels = JSQR_MAX_PIXELS) {
 }
 
 async function tryOpenCVDecodeFromImageData(imageData, label) {
-  if (typeof cv === 'undefined' || !cv.QRCodeDetector) return null
+  console.log(`[QR解码] OpenCV 解码检查: cv=${typeof cv}, QRCodeDetector=${typeof cv !== 'undefined' ? !!cv.QRCodeDetector : 'N/A'}`)
+  if (typeof cv === 'undefined' || !cv.QRCodeDetector) {
+    console.log('[QR解码] OpenCV 解码跳过: QRCodeDetector 不可用')
+    return null
+  }
   
   await loadOpenCV()
   
@@ -910,14 +960,12 @@ async function tryOpenCVDecodeFromImageData(imageData, label) {
 }
 
 /**
- * 解码QR码内容 (OpenCV + jsQR)
+ * 解码QR码内容 (仅使用 jsQR)
  * @param {string} base64Image - Base64图像字符串
  * @returns {Promise<string|null>} 解码后的文本内容
  */
 export async function decodeQRCode(base64Image) {
   try {
-    console.log('[QR解码] 开始解码...')
-    
     // 从 Base64 创建 Image 对象
     const img = new Image()
     await new Promise((resolve, reject) => {
@@ -926,71 +974,36 @@ export async function decodeQRCode(base64Image) {
       img.src = base64Image
     })
     
-    console.log('[QR解码] 原始图像尺寸:', img.width, 'x', img.height)
+    console.log('[QR解码] 图像尺寸:', img.width, 'x', img.height)
     
-    // 在控制台显示截取的图像(用于调试)
-    console.log('[QR解码] 截取的图像预览:')
-    console.log('%c ', `
-      font-size: 1px;
-      padding: ${Math.min(img.height / 2, 100)}px ${Math.min(img.width / 2, 100)}px;
-      background-image: url(${base64Image});
-      background-size: contain;
-      background-repeat: no-repeat;
-    `)
-    
-    // ============ 方法0: 使用 OpenCV 解码 (颜色/低对比更鲁棒) ============
-    const baseResult = getImageDataAtScale(img, 1, false)
-    const { imageData: baseImageData } = baseResult
-    let openCVText = await tryOpenCVDecodeFromImageData(baseImageData, '1x')
-    if (openCVText) {
-      console.log('[QR解码] 内容:', openCVText)
-      return openCVText
-    }
-    
-    const scaledResult = getImageDataAtScale(img, 2, false)
-    const { imageData: scaledImageData } = scaledResult
-    openCVText = await tryOpenCVDecodeFromImageData(scaledImageData, '2x')
-    if (openCVText) {
-      console.log('[QR解码] 内容:', openCVText)
-      return openCVText
-    }
-    
-    // ============ 方法1: 使用 jsQR (更简单可靠) ============
-    console.log('[QR解码] 尝试使用 jsQR 库...')
     const jsQR = (await import('jsqr')).default
     
-    // 尝试不同的放大倍数
-    const scales = getJsqrScales(img)
-    const scaleCache = new Map([
-      [1, baseResult],
-      [2, scaledResult]
-    ])
-    const getScaleData = (scale) => scaleCache.get(scale) || getImageDataAtScale(img, scale, false)
+    // 只尝试 1x 和 2x 放大（足够了）
+    const scales = [1, 2]
     
-    console.log('[QR解码] jsQR 固定使用二值化处理')
+    // 直接使用多种二值化策略（对彩色二维码更有效）
     for (const scale of scales) {
-      const scaleLabel = formatScale(scale)
-      console.log(`[QR解码] jsQR 尝试 ${scaleLabel}x 放大(二值化)...`)
-      const { imageData, canvas } = getScaleData(scale)
-      console.log(`[QR解码] 处理后尺寸: ${canvas.width} x ${canvas.height}`)
-      const binarized = binarizeImageData(imageData)
+      const { imageData } = getImageDataAtScale(img, scale, false)
       
-      const code = jsQR(binarized.data, binarized.width, binarized.height, {
-        inversionAttempts: 'attemptBoth'
-      })
+      // 获取所有二值化变体
+      const variants = getAllBinarizedVariants(imageData)
       
-      if (code && code.data) {
-        console.log(`[QR解码] ✓ jsQR 解码成功! (${scaleLabel}x 放大, 二值化)`)
-        console.log('[QR解码] 内容:', code.data)
-        return code.data
+      for (const variant of variants) {
+        const code = jsQR(variant.data.data, variant.data.width, variant.data.height, {
+          inversionAttempts: 'attemptBoth'
+        })
+        
+        if (code && code.data) {
+          console.log(`[QR解码] ✓ 成功! (${scale}x, ${variant.name})`)
+          return code.data
+        }
       }
     }
     
-    console.log('[QR解码] ✗ 所有方法都无法解码')
-    console.log('[QR解码] 提示: 请检查截取的图像是否包含完整、清晰的二维码')
+    console.log('[QR解码] ✗ 无法解码')
     return null
   } catch (error) {
-    console.error('[QR解码] 解码过程出错:', error)
+    console.error('[QR解码] 出错:', error)
     return null
   }
 }
@@ -1100,8 +1113,14 @@ export async function decodeQRCodeFromCanvas(sourceCanvas, detection, options = 
   } = options
   
   if (!sourceCanvas || !detection || !detection.boundingBox) {
+    console.log('[QR截取] 参数无效:', { sourceCanvas: !!sourceCanvas, detection: !!detection, boundingBox: detection?.boundingBox })
     return null
   }
+
+  console.log('[QR截取] ========== 开始截取 ==========')
+  console.log('[QR截取] 源canvas尺寸:', sourceCanvas.width, 'x', sourceCanvas.height)
+  console.log('[QR截取] 检测边界框:', detection.boundingBox)
+  console.log('[QR截取] paddingRatio:', paddingRatio, ', targetSize:', targetSize)
 
   const { x, y, width, height } = detection.boundingBox
   const padX = width * paddingRatio
@@ -1118,7 +1137,10 @@ export async function decodeQRCodeFromCanvas(sourceCanvas, detection, options = 
     Math.ceil(height + padY * 2)
   )
   
+  console.log('[QR截取] ROI区域: x=' + roiX + ', y=' + roiY + ', w=' + roiWidth + ', h=' + roiHeight)
+  
   if (roiWidth <= 0 || roiHeight <= 0) {
+    console.log('[QR截取] ROI 尺寸无效')
     return null
   }
   
@@ -1126,6 +1148,8 @@ export async function decodeQRCodeFromCanvas(sourceCanvas, detection, options = 
   const scale = maxSide > 0 ? Math.max(1, targetSize / maxSide) : 1
   const outWidth = Math.max(1, Math.round(roiWidth * scale))
   const outHeight = Math.max(1, Math.round(roiHeight * scale))
+  
+  console.log('[QR截取] 放大倍数:', scale.toFixed(2), ', 输出尺寸:', outWidth, 'x', outHeight)
   
   const canvas = document.createElement('canvas')
   canvas.width = outWidth
@@ -1145,19 +1169,24 @@ export async function decodeQRCodeFromCanvas(sourceCanvas, detection, options = 
     0, 0, outWidth, outHeight
   )
   
-  const roiDecoded = await decodeQRCode(canvas.toDataURL('image/png'))
-  if (roiDecoded) return roiDecoded
-  
+  // 优先使用 Warp 透视变换（更精确，去除多余背景）
   const warped = await warpQRCodeFromCanvas(sourceCanvas, detection, {
-    paddingRatio,
+    paddingRatio: 0.15,  // warp 变换用较小的 padding
     targetSize,
     backgroundColor
   })
   
   if (warped) {
+    window._lastCroppedQR = warped
+    console.log('[QR截取] Warp变换完成! 可通过 window._lastCroppedQR 查看')
     const decoded = await decodeQRCode(warped)
     if (decoded) return decoded
   }
   
-  return null
+  // Warp 失败时尝试 ROI 截取
+  const base64 = canvas.toDataURL('image/png')
+  window._lastCroppedQR = base64
+  console.log('[QR截取] ROI截取完成! 可通过 window._lastCroppedQR 查看')
+  
+  return await decodeQRCode(base64)
 }
