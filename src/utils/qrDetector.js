@@ -10,11 +10,11 @@
 let cvReady = false
 let cvLoadPromise = null
 const DETECTION_STRATEGIES = [
-  { name: '放大3倍', steps: ['scale_3'] },
-  { name: '放大3倍+对比度增强+Otsu', steps: ['scale_3', 'contrast', 'otsu'] },
-  { name: '放大3倍+自适应二值化(高斯)', steps: ['scale_3', 'adaptive'] },
-  { name: '放大3倍+锐化', steps: ['scale_3', 'sharpen'] },
-  { name: '放大3倍+对比度+自适应二值化', steps: ['scale_3', 'contrast', 'adaptive'] }
+  { name: '直接检测', steps: [] },
+  { name: '对比度增强+Otsu', steps: ['contrast', 'otsu'] },
+  { name: '自适应二值化(高斯)', steps: ['adaptive'] },
+  { name: '锐化', steps: ['sharpen'] },
+  { name: '对比度+自适应二值化', steps: ['contrast', 'adaptive'] }
 ]
 
 /**
@@ -379,7 +379,13 @@ export async function detectQRCode(imageData, sourceCanvas = null) {
       return null
     }
     
-    const result = await detectWithStrategies('', gray, 1, DETECTION_STRATEGIES)
+    // 先统一做一次 3 倍放大（避免每个策略重复放大）
+    const scaled3x = scaleUp(gray, 3)
+    matsToDelete.push(scaled3x)
+    console.log('[QR检测] 统一执行 3 倍放大')
+    
+    // baseScale=3 表示输入图像已经是 3 倍放大，坐标需要除以 3
+    const result = await detectWithStrategies('', scaled3x, 3, DETECTION_STRATEGIES)
     
     detector.delete()
     
